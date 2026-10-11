@@ -27,6 +27,10 @@ RUN python3 -m pip install --break-system-packages \
 
 RUN pip install --break-system-packages -r requirements.txt
 
-EXPOSE 8188
+RUN pip install --break-system-packages runpod requests
 
-CMD ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
+WORKDIR /workspace
+
+COPY handler.py /workspace/handler.py
+
+CMD ["python3", "/workspace/handler.py"]
