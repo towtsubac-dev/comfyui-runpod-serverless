@@ -42,42 +42,10 @@ comfy_process = start_comfyui()
 
 
 def handler(job):
-    job_input = job.get("input", {})
-
-    prompt = job_input.get("prompt")
-
-    if not prompt:
-        return {
-            "error": "prompt is required"
-        }
-
-    client_id = str(uuid.uuid4())
-
-    payload = {
-        "prompt": prompt,
-        "client_id": client_id
+    return {
+        "status": "ok",
+        "message": "ComfyUI Serverless worker is running"
     }
-
-    try:
-        response = requests.post(
-            f"{COMFYUI_URL}/prompt",
-            json=payload,
-            timeout=30
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        return {
-            "status": "submitted",
-            "prompt_id": result.get("prompt_id")
-        }
-
-    except Exception as e:
-        return {
-            "error": str(e)
-        }
 
 
 runpod.serverless.start({
