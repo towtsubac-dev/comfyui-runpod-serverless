@@ -35,5 +35,5 @@ jobs:
           push: true
 
           tags: |
-  ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:latest
-  ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:v1
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:latest
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:v1
