@@ -9,6 +9,8 @@ ENV COMFYUI_DIR=/workspace/ComfyUI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
+    gcc \
+    g++ \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
