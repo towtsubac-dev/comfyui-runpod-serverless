@@ -9,7 +9,7 @@ COMFYUI_DIR = "/workspace/ComfyUI"
 COMFYUI_URL = "http://127.0.0.1:8188"
 
 comfy_process = None
-
+print("=== HANDLER STARTED ===", flush=True)
 
 def start_comfyui():
     global comfy_process
