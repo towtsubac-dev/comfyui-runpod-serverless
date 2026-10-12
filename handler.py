@@ -1,11 +1,9 @@
 import runpod
 
 def handler(job):
-    print("JOB RECEIVED:", job, flush=True)
-
     return {
         "status": "ok",
-        "message": "Serverless handler is working"
+        "message": "RunPod worker is running"
     }
 
 runpod.serverless.start({
