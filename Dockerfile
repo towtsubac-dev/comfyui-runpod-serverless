@@ -24,9 +24,12 @@ RUN python --version && \
     pip --version && \
     python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA:', torch.version.cuda)"
 
-RUN pip install --no-cache-dir -r requirements.txt -v
+RUN pip install --break-system-packages \
+    --no-cache-dir \
+    -r requirements.txt
 
-RUN pip install --no-cache-dir \
+RUN pip install --break-system-packages \
+    --no-cache-dir \
     runpod \
     requests
 
