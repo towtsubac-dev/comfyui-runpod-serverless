@@ -38,7 +38,6 @@ RUN pip install --break-system-packages \
     huggingface_hub
 
 ENV HF_HOME=/workspace/huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
 WORKDIR /workspace
 
