@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
+FROM pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
