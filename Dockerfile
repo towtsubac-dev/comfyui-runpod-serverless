@@ -32,6 +32,10 @@ RUN pip install --break-system-packages \
     --no-cache-dir \
     runpod \
     requests
+    
+RUN pip install --break-system-packages \
+    --no-cache-dir \
+    huggingface_hub
 
 WORKDIR /workspace
 
