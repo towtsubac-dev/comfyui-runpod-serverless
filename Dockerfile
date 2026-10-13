@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+FROM pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
@@ -22,7 +22,9 @@ WORKDIR /workspace/ComfyUI
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-cache-dir runpod requests
+RUN pip install --no-cache-dir \
+    runpod \
+    requests
 
 WORKDIR /workspace
 
