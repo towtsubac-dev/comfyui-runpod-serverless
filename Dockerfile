@@ -20,7 +20,11 @@ RUN git clone --depth 1 \
 
 WORKDIR /workspace/ComfyUI
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python --version && \
+    pip --version && \
+    python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA:', torch.version.cuda)"
+
+RUN pip install --no-cache-dir -r requirements.txt -v
 
 RUN pip install --no-cache-dir \
     runpod \
