@@ -1,15 +1,10 @@
-
 import os
-import sys
-import time
-import uuid
+import io
 import json
+import time
 import base64
-import logging
-import subprocess
 import threading
-from pathlib import Path
-from urllib.parse import urlencode
+import subprocess
 
 import requests
 import runpod
@@ -19,793 +14,772 @@ import runpod
 # Configuration
 # =========================================================
 
-COMFYUI_DIR = os.environ.get(
-    "COMFYUI_DIR", "/workspace/ComfyUI"
-)
+COMFYUI_HOST = "127.0.0.1"
+COMFYUI_PORT = 8188
+COMFYUI_URL = f"http://{COMFYUI_HOST}:{COMFYUI_PORT}"
 
-COMFYUI_HOST = os.environ.get(
-    "COMFYUI_HOST", "127.0.0.1"
-)
+COMFYUI_DIR = "/workspace/ComfyUI"
 
-COMFYUI_PORT = int(
-    os.environ.get("COMFYUI_PORT", "8188")
-)
-
-COMFYUI_URL = (
-    f"http://{COMFYUI_HOST}:{COMFYUI_PORT}"
-)
-
-START_COMFYUI = (
-    os.environ.get("START_COMFYUI", "true").lower()
-    in ("1", "true", "yes")
-)
-
-STARTUP_TIMEOUT = int(
-    os.environ.get("COMFYUI_STARTUP_TIMEOUT", "600")
-)
-
-GENERATION_TIMEOUT = int(
-    os.environ.get("GENERATION_TIMEOUT", "1800")
-)
-
-POLL_INTERVAL = float(
-    os.environ.get("POLL_INTERVAL", "2")
-)
-
-OUTPUT_DIR = Path(
-    os.environ.get(
-        "COMFYUI_OUTPUT_DIR",
-        os.path.join(COMFYUI_DIR, "output")
-    )
-)
-
-INPUT_DIR = Path(
-    os.environ.get(
-        "COMFYUI_INPUT_DIR",
-        os.path.join(COMFYUI_DIR, "input")
-    )
-)
-
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-logger = logging.getLogger("minimax-h3-handler")
-
-session = requests.Session()
-
-comfy_process = None
-comfy_lock = threading.Lock()
+STARTUP_TIMEOUT = 180
+POLL_INTERVAL = 1.0
+REQUEST_TIMEOUT = 30
 
 
 # =========================================================
-# HTTP helpers
+# MiniMax H3 model files
 # =========================================================
 
-def comfy_request(
-    method,
-    path,
-    *,
-    timeout=60,
-    **kwargs
-):
-    url = f"{COMFYUI_URL}{path}"
+H3_MODEL_FILES = {
+    "diffusion_model": (
+        "/workspace/ComfyUI/models/diffusion_models/"
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+    ),
 
-    response = session.request(
-        method,
-        url,
-        timeout=timeout,
-        **kwargs
-    )
+    "text_encoder": (
+        "/workspace/ComfyUI/models/text_encoders/"
+        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    ),
 
-    response.raise_for_status()
-    return response
+    "video_vae": (
+        "/workspace/ComfyUI/models/vae/"
+        "minimax_h3_video_vae_int8_convrot.safetensors"
+    ),
+
+    "audio_vae": (
+        "/workspace/ComfyUI/models/vae/"
+        "minimax_h3_audio_vae_fp32.safetensors"
+    ),
+
+    "turbo_lora": (
+        "/workspace/ComfyUI/models/loras/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+    ),
+}
 
 
-def wait_for_comfyui(timeout=STARTUP_TIMEOUT):
-    """Wait until the ComfyUI API responds."""
+# =========================================================
+# Global state
+# =========================================================
 
-    deadline = time.monotonic() + timeout
-    last_error = None
+_comfy_process = None
+_comfy_lock = threading.Lock()
 
-    while time.monotonic() < deadline:
-        try:
-            response = session.get(
-                f"{COMFYUI_URL}/system_stats",
-                timeout=5
-            )
 
-            if response.ok:
-                logger.info("ComfyUI API is ready")
-                return True
+# =========================================================
+# Utility
+# =========================================================
 
-            last_error = (
-                f"HTTP {response.status_code}"
-            )
+def file_info(path):
+    """
+    Return information about a model file.
+    """
 
-        except requests.RequestException as exc:
-            last_error = str(exc)
+    exists = os.path.isfile(path)
 
-        time.sleep(2)
+    if not exists:
+        return {
+            "exists": False,
+            "path": path,
+            "size_bytes": None,
+            "size_gb": None,
+        }
 
-    raise TimeoutError(
-        "ComfyUI did not become ready within "
-        f"{timeout} seconds. Last error: {last_error}"
-    )
+    size = os.path.getsize(path)
 
+    return {
+        "exists": True,
+        "path": path,
+        "size_bytes": size,
+        "size_gb": round(size / (1024 ** 3), 3),
+    }
+
+
+# =========================================================
+# Start ComfyUI
+# =========================================================
 
 def start_comfyui():
-    """Start ComfyUI when it is not already responding."""
+    global _comfy_process
 
-    global comfy_process
+    with _comfy_lock:
 
-    with comfy_lock:
-        try:
-            response = session.get(
-                f"{COMFYUI_URL}/system_stats",
-                timeout=3
-            )
-
-            if response.ok:
-                logger.info("ComfyUI is already running")
+        # Already running
+        if _comfy_process is not None:
+            if _comfy_process.poll() is None:
                 return
 
-        except requests.RequestException:
-            pass
+        print("Starting ComfyUI...")
 
-        if not START_COMFYUI:
-            raise RuntimeError(
-                "ComfyUI is unavailable and "
-                "START_COMFYUI is disabled"
-            )
-
-        main_py = os.path.join(
-            COMFYUI_DIR, "main.py"
-        )
-
-        if not os.path.isfile(main_py):
-            raise FileNotFoundError(
-                f"ComfyUI main.py not found: {main_py}"
-            )
-
-        command = [
-            sys.executable,
-            main_py,
+        cmd = [
+            "python",
+            os.path.join(COMFYUI_DIR, "main.py"),
             "--listen",
             COMFYUI_HOST,
             "--port",
             str(COMFYUI_PORT),
         ]
 
-        logger.info(
-            "Starting ComfyUI: %s",
-            " ".join(command)
-        )
-
-        comfy_process = subprocess.Popen(
-            command,
+        _comfy_process = subprocess.Popen(
+            cmd,
             cwd=COMFYUI_DIR,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            env=os.environ.copy(),
+            stdout=None,
+            stderr=None,
         )
 
-    wait_for_comfyui()
+    # Wait until ComfyUI responds
+    start_time = time.time()
 
+    while time.time() - start_time < STARTUP_TIMEOUT:
+
+        try:
+            r = requests.get(
+                f"{COMFYUI_URL}/system_stats",
+                timeout=5,
+            )
+
+            if r.status_code == 200:
+                print("ComfyUI is ready.")
+                return
+
+        except Exception:
+            pass
+
+        time.sleep(1)
+
+    raise RuntimeError(
+        "ComfyUI did not become ready within timeout."
+    )
+
+
+# =========================================================
+# Ensure ComfyUI
+# =========================================================
 
 def ensure_comfyui():
-    """Ensure ComfyUI is available before handling a job."""
-
     try:
-        response = session.get(
+        r = requests.get(
             f"{COMFYUI_URL}/system_stats",
-            timeout=5
+            timeout=5,
         )
 
-        if response.ok:
+        if r.status_code == 200:
             return
 
-    except requests.RequestException:
+    except Exception:
         pass
 
     start_comfyui()
 
 
 # =========================================================
-# Input validation
+# Health check
 # =========================================================
 
-def get_job_input(job):
-    if not isinstance(job, dict):
-        raise ValueError("Job must be a JSON object")
+def health_check():
 
-    data = job.get("input", {})
+    ensure_comfyui()
 
-    if not isinstance(data, dict):
-        raise ValueError("'input' must be a JSON object")
-
-    return data
-
-
-def decode_image(image_value):
-    """
-    Accept either:
-      - base64-encoded image data
-      - a data:image/...;base64,... string
-    """
-
-    if not isinstance(image_value, str) or not image_value:
-        raise ValueError(
-            "Provide 'image' as a base64 string"
-        )
-
-    if image_value.startswith("data:"):
-        if "," not in image_value:
-            raise ValueError("Invalid image data URL")
-
-        header, image_value = image_value.split(",", 1)
-
-        if ";base64" not in header:
-            raise ValueError(
-                "Image data URL must use base64 encoding"
-            )
-
-    try:
-        image_bytes = base64.b64decode(
-            image_value,
-            validate=True
-        )
-    except Exception as exc:
-        raise ValueError(
-            "Image is not valid base64"
-        ) from exc
-
-    if not image_bytes:
-        raise ValueError("Image is empty")
-
-    return image_bytes
-
-
-def upload_image(image_bytes, filename=None):
-    """Upload the input image to ComfyUI."""
-
-    INPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if filename:
-        filename = os.path.basename(filename)
-    else:
-        filename = f"input_{uuid.uuid4().hex}.png"
-
-    if not filename:
-        filename = f"input_{uuid.uuid4().hex}.png"
-
-    response = comfy_request(
-        "POST",
-        "/upload/image",
-        files={
-            "image": (
-                filename,
-                image_bytes,
-                "application/octet-stream"
-            )
-        },
-        data={
-            "type": "input",
-            "overwrite": "true",
-        },
-        timeout=120,
+    r = requests.get(
+        f"{COMFYUI_URL}/system_stats",
+        timeout=REQUEST_TIMEOUT,
     )
 
-    result = response.json()
-
-    uploaded_name = result.get("name")
-
-    if not uploaded_name:
-        raise RuntimeError(
-            f"ComfyUI image upload failed: {result}"
-        )
-
-    subfolder = result.get("subfolder", "")
-
-    logger.info(
-        "Uploaded input image: %s",
-        uploaded_name
-    )
+    r.raise_for_status()
 
     return {
-        "name": uploaded_name,
-        "subfolder": subfolder,
-        "type": result.get("type", "input"),
+        "status": "ok",
+        "message": "ComfyUI is running",
+        "system_stats": r.json(),
     }
 
 
 # =========================================================
-# Workflow helpers
+# H3 model check
 # =========================================================
 
-def load_workflow(data):
-    """
-    The workflow must be ComfyUI API-format JSON,
-    exported using Save (API Format).
-    """
+def h3_check():
 
-    workflow = data.get("workflow")
+    ensure_comfyui()
 
-    if isinstance(workflow, str):
-        try:
-            workflow = json.loads(workflow)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "'workflow' is not valid JSON"
-            ) from exc
+    # -----------------------------------------------------
+    # Check model files
+    # -----------------------------------------------------
 
-    if not isinstance(workflow, dict) or not workflow:
-        raise ValueError(
-            "Missing 'workflow'. Supply a ComfyUI "
-            "API-format workflow in the request."
+    models = {}
+
+    for name, path in H3_MODEL_FILES.items():
+        models[name] = file_info(path)
+
+    models_ok = all(
+        item["exists"]
+        for item in models.values()
+    )
+
+    # -----------------------------------------------------
+    # Check ComfyUI H3 nodes
+    # -----------------------------------------------------
+
+    h3_nodes = {}
+    object_info_error = None
+
+    try:
+
+        r = requests.get(
+            f"{COMFYUI_URL}/object_info",
+            timeout=REQUEST_TIMEOUT,
         )
 
-    # API workflows contain node IDs as top-level keys.
-    # A normal UI-format workflow is not accepted here.
-    for node_id, node in workflow.items():
-        if not isinstance(node, dict):
-            raise ValueError(
-                f"Invalid workflow node: {node_id}"
-            )
+        r.raise_for_status()
 
-        if "class_type" not in node:
-            raise ValueError(
-                f"Node {node_id} has no class_type. "
-                "Export the workflow using Save (API Format)."
-            )
+        object_info = r.json()
 
-    return workflow
+        for node_name, node_data in object_info.items():
 
+            if (
+                "MiniMaxH3" in node_name
+                or "MiniMax" in node_name
+                or "H3" in node_name
+            ):
+                h3_nodes[node_name] = {
+                    "display_name": node_data.get(
+                        "display_name"
+                    ),
+                    "category": node_data.get(
+                        "category"
+                    ),
+                }
 
-def set_node_input(workflow, node_id, input_name, value):
-    """Set one input on a specific workflow node."""
+    except Exception as e:
 
-    node_id = str(node_id)
+        object_info_error = str(e)
 
-    if node_id not in workflow:
-        raise ValueError(
-            f"Workflow node {node_id} does not exist"
-        )
+    nodes_ok = len(h3_nodes) > 0
 
-    node = workflow[node_id]
+    # -----------------------------------------------------
+    # Result
+    # -----------------------------------------------------
 
-    if not isinstance(node.get("inputs"), dict):
-        raise ValueError(
-            f"Node {node_id} has no inputs object"
-        )
+    return {
+        "status": "ok",
 
-    if input_name not in node["inputs"]:
-        raise ValueError(
-            f"Input '{input_name}' not found on "
-            f"node {node_id}"
-        )
+        "h3_ready": (
+            models_ok
+            and nodes_ok
+        ),
 
-    node["inputs"][input_name] = value
+        "models_ok": models_ok,
+        "nodes_ok": nodes_ok,
 
+        "models": models,
 
-def apply_overrides(workflow, overrides):
-    """
-    Apply explicit node-input overrides.
+        "h3_nodes": h3_nodes,
 
-    Example:
-    {
-      "12": {
-        "inputs": {
-          "text": "A cinematic video"
-        }
-      }
+        "object_info_error": object_info_error,
     }
-    """
-
-    if not overrides:
-        return
-
-    if not isinstance(overrides, dict):
-        raise ValueError("'overrides' must be an object")
-
-    for node_id, specification in overrides.items():
-        if not isinstance(specification, dict):
-            raise ValueError(
-                f"Invalid override for node {node_id}"
-            )
-
-        inputs = specification.get("inputs", {})
-
-        if not isinstance(inputs, dict):
-            raise ValueError(
-                f"Invalid inputs for node {node_id}"
-            )
-
-        for input_name, value in inputs.items():
-            set_node_input(
-                workflow,
-                node_id,
-                input_name,
-                value
-            )
-
-
-def prepare_workflow(data, uploaded_image):
-    """
-    Inject image and prompt into an API workflow.
-
-    Supply image_node_id and image_input_name to identify
-    the image loader node.
-
-    Supply prompt_node_id and prompt_input_name to identify
-    the positive-prompt node.
-    """
-
-    workflow = load_workflow(data)
-
-    image_node_id = data.get("image_node_id")
-    prompt_node_id = data.get("prompt_node_id")
-
-    image_input_name = data.get(
-        "image_input_name", "image"
-    )
-
-    prompt_input_name = data.get(
-        "prompt_input_name", "text"
-    )
-
-    if image_node_id is not None:
-        set_node_input(
-            workflow,
-            image_node_id,
-            image_input_name,
-            uploaded_image["name"]
-        )
-
-    if prompt_node_id is not None:
-        prompt = data.get("prompt")
-
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError(
-                "'prompt' must be a non-empty string"
-            )
-
-        set_node_input(
-            workflow,
-            prompt_node_id,
-            prompt_input_name,
-            prompt.strip()
-        )
-
-    apply_overrides(
-        workflow,
-        data.get("overrides")
-    )
-
-    return workflow
 
 
 # =========================================================
-# Generation
+# Upload image
 # =========================================================
 
-def queue_workflow(workflow):
-    """Submit the workflow to the ComfyUI API."""
+def upload_image(image_bytes, filename="input.png"):
 
-    client_id = str(uuid.uuid4())
+    ensure_comfyui()
 
-    response = comfy_request(
-        "POST",
-        "/prompt",
-        json={
-            "prompt": workflow,
-            "client_id": client_id,
-        },
-        timeout=120,
+    files = {
+        "image": (
+            filename,
+            io.BytesIO(image_bytes),
+            "image/png",
+        )
+    }
+
+    data = {
+        "overwrite": "true",
+    }
+
+    r = requests.post(
+        f"{COMFYUI_URL}/upload/image",
+        files=files,
+        data=data,
+        timeout=REQUEST_TIMEOUT,
     )
 
-    result = response.json()
+    r.raise_for_status()
 
-    prompt_id = result.get("prompt_id")
+    result = r.json()
 
-    if not prompt_id:
+    return result["name"]
+
+
+# =========================================================
+# Queue workflow
+# =========================================================
+
+def queue_prompt(workflow):
+
+    ensure_comfyui()
+
+    payload = {
+        "prompt": workflow,
+    }
+
+    r = requests.post(
+        f"{COMFYUI_URL}/prompt",
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    r.raise_for_status()
+
+    result = r.json()
+
+    if "error" in result:
         raise RuntimeError(
-            f"ComfyUI did not return prompt_id: {result}"
+            f"ComfyUI prompt error: {result}"
         )
 
-    logger.info(
-        "Queued ComfyUI workflow: %s",
-        prompt_id
-    )
-
-    return prompt_id
+    return result["prompt_id"]
 
 
-def wait_for_generation(prompt_id, timeout=None):
-    """Poll ComfyUI history until the job completes."""
+# =========================================================
+# Wait for workflow
+# =========================================================
 
-    if timeout is None:
-        timeout = GENERATION_TIMEOUT
+def wait_for_result(prompt_id, timeout=1800):
 
-    deadline = time.monotonic() + timeout
-    history_path = f"/history/{prompt_id}"
+    start_time = time.time()
 
-    while time.monotonic() < deadline:
-        response = comfy_request(
-            "GET",
-            history_path,
-            timeout=30,
-        )
+    while True:
 
-        history = response.json()
-        record = history.get(prompt_id)
+        if time.time() - start_time > timeout:
+            raise TimeoutError(
+                f"Workflow timeout: {prompt_id}"
+            )
 
-        if record:
-            status = record.get("status", {})
-            messages = status.get("messages", [])
+        try:
 
-            if status.get("status_str") == "error":
-                raise RuntimeError(
-                    "ComfyUI generation failed: "
-                    + json.dumps(
-                        messages,
-                        ensure_ascii=False
+            r = requests.get(
+                f"{COMFYUI_URL}/history/{prompt_id}",
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if r.status_code == 200:
+
+                history = r.json()
+
+                if prompt_id in history:
+
+                    result = history[prompt_id]
+
+                    status = result.get(
+                        "status",
+                        {}
                     )
-                )
 
-            if status.get("completed", False):
-                return record
+                    status_str = status.get(
+                        "status_str"
+                    )
 
-            # Some ComfyUI versions expose execution
-            # errors through status messages.
-            for message in messages:
-                if (
-                    isinstance(message, list)
-                    and message
-                    and message[0] == "execution_error"
-                ):
-                    raise RuntimeError(
-                        "ComfyUI execution error: "
-                        + json.dumps(
-                            message,
-                            ensure_ascii=False
+                    if status_str == "error":
+                        raise RuntimeError(
+                            f"ComfyUI execution error: "
+                            f"{result}"
                         )
-                    )
+
+                    if status.get(
+                        "completed",
+                        False
+                    ):
+                        return result
+
+        except requests.RequestException:
+            pass
 
         time.sleep(POLL_INTERVAL)
 
-    raise TimeoutError(
-        f"Generation timed out after {timeout} seconds"
-    )
-
 
 # =========================================================
-# Output extraction
+# Download ComfyUI output
 # =========================================================
 
-def collect_output_files(history_record):
-    """Collect generated files from ComfyUI history."""
+def download_output(
+    filename,
+    subfolder="",
+    folder_type="output",
+):
 
-    outputs = history_record.get("outputs", {})
-    files = []
-
-    for node_id, node_output in outputs.items():
-        if not isinstance(node_output, dict):
-            continue
-
-        for output_type, entries in node_output.items():
-            if not isinstance(entries, list):
-                continue
-
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-
-                filename = entry.get("filename")
-
-                if not filename:
-                    continue
-
-                files.append({
-                    "node_id": str(node_id),
-                    "output_type": output_type,
-                    "filename": filename,
-                    "subfolder": entry.get(
-                        "subfolder", ""
-                    ),
-                    "type": entry.get("type", "output"),
-                })
-
-    return files
-
-
-def download_output_file(file_info):
-    """Download one generated file from ComfyUI."""
-
-    params = urlencode({
-        "filename": file_info["filename"],
-        "subfolder": file_info.get("subfolder", ""),
-        "type": file_info.get("type", "output"),
-    })
-
-    response = comfy_request(
-        "GET",
-        f"/view?{params}",
-        timeout=180,
-    )
-
-    return response.content
-
-
-def is_video_file(file_info):
-    filename = file_info.get("filename", "").lower()
-
-    return filename.endswith((
-        ".mp4",
-        ".webm",
-        ".mov",
-        ".mkv",
-        ".avi",
-        ".gif",
-    ))
-
-
-# =========================================================
-# RunPod handler
-# =========================================================
-
-def handler(job):
-    """
-    Request example:
-
-    {
-      "input": {
-        "image": "<base64-image>",
-        "prompt": "A cinematic shot...",
-        "workflow": { "...": "ComfyUI API workflow" },
-        "image_node_id": "10",
-        "prompt_node_id": "12",
-        "timeout": 1800
-      }
+    params = {
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type,
     }
 
-    Node IDs and input names depend on your workflow.
-    """
+    r = requests.get(
+        f"{COMFYUI_URL}/view",
+        params=params,
+        timeout=REQUEST_TIMEOUT,
+    )
 
-    try:
-        data = get_job_input(job)
+    r.raise_for_status()
 
-        # Health check: no workflow or image required.
-        if data.get("action") == "health":
-            ensure_comfyui()
+    return r.content
 
-            stats = comfy_request(
-                "GET",
-                "/system_stats",
-                timeout=15,
-            ).json()
 
-            return {
-                "status": "ok",
-                "message": "ComfyUI is running",
-                "system_stats": stats,
-            }
+# =========================================================
+# Extract outputs
+# =========================================================
 
-        ensure_comfyui()
+def extract_outputs(history):
 
-        image_bytes = decode_image(
-            data.get("image")
-        )
+    outputs = []
 
-        uploaded_image = upload_image(
-            image_bytes,
-            data.get("image_filename")
-        )
+    result_outputs = history.get(
+        "outputs",
+        {}
+    )
 
-        workflow = prepare_workflow(
-            data,
-            uploaded_image
-        )
+    for node_id, node_output in result_outputs.items():
 
-        prompt_id = queue_workflow(workflow)
+        # -------------------------------------------------
+        # Videos
+        # -------------------------------------------------
 
-        history_record = wait_for_generation(
-            prompt_id,
-            timeout=int(
-                data.get(
-                    "timeout",
-                    GENERATION_TIMEOUT
-                )
-            ),
-        )
+        for video in node_output.get(
+            "gifs",
+            []
+        ):
 
-        output_files = collect_output_files(
-            history_record
-        )
-
-        if not output_files:
-            raise RuntimeError(
-                "Workflow completed but produced no "
-                "downloadable output files"
-            )
-
-        videos = [
-            item for item in output_files
-            if is_video_file(item)
-        ]
-
-        # Prefer video outputs. If none exist, return
-        # available outputs so workflow problems are visible.
-        selected_files = videos if videos else output_files
-
-        return_files = []
-        total_bytes = 0
-
-        max_output_bytes = int(
-            data.get(
-                "max_output_bytes",
-                100 * 1024 * 1024
-            )
-        )
-
-        for item in selected_files:
-            content = download_output_file(item)
-
-            if total_bytes + len(content) > max_output_bytes:
-                raise RuntimeError(
-                    "Generated output exceeds max_output_bytes. "
-                    "Reduce output size or increase the limit."
-                )
-
-            total_bytes += len(content)
-
-            return_files.append({
-                "filename": item["filename"],
-                "subfolder": item.get("subfolder", ""),
-                "output_type": item["output_type"],
-                "mime_type": (
-                    "video/mp4"
-                    if item["filename"].lower().endswith(".mp4")
-                    else "application/octet-stream"
+            outputs.append({
+                "type": "video",
+                "filename": video.get(
+                    "filename"
                 ),
-                "data": base64.b64encode(
-                    content
-                ).decode("ascii"),
+                "subfolder": video.get(
+                    "subfolder",
+                    ""
+                ),
+                "format": video.get(
+                    "format"
+                ),
             })
 
-        return {
-            "status": "ok",
-            "prompt_id": prompt_id,
-            "output_count": len(return_files),
-            "output": return_files,
-        }
+        # -------------------------------------------------
+        # Images
+        # -------------------------------------------------
 
-    except Exception as exc:
-        logger.exception("Handler execution failed")
+        for image in node_output.get(
+            "images",
+            []
+        ):
+
+            outputs.append({
+                "type": "image",
+                "filename": image.get(
+                    "filename"
+                ),
+                "subfolder": image.get(
+                    "subfolder",
+                    ""
+                ),
+                "format": image.get(
+                    "type"
+                ),
+            })
+
+    return outputs
+
+
+# =========================================================
+# Run workflow
+# =========================================================
+
+def run_workflow(
+    workflow,
+    image_bytes=None,
+    image_filename="input.png",
+    image_node_id=None,
+    image_input_name=None,
+    prompt_node_id=None,
+    prompt_input_name=None,
+    prompt_text=None,
+    overrides=None,
+):
+
+    ensure_comfyui()
+
+    # -----------------------------------------------------
+    # Copy workflow
+    # -----------------------------------------------------
+
+    workflow = json.loads(
+        json.dumps(workflow)
+    )
+
+    # -----------------------------------------------------
+    # Upload image
+    # -----------------------------------------------------
+
+    if image_bytes is not None:
+
+        uploaded_name = upload_image(
+            image_bytes,
+            image_filename,
+        )
+
+        if (
+            image_node_id is not None
+            and image_input_name is not None
+        ):
+
+            workflow[
+                str(image_node_id)
+            ][
+                "inputs"
+            ][
+                image_input_name
+            ] = uploaded_name
+
+    # -----------------------------------------------------
+    # Prompt
+    # -----------------------------------------------------
+
+    if (
+        prompt_text is not None
+        and prompt_node_id is not None
+        and prompt_input_name is not None
+    ):
+
+        workflow[
+            str(prompt_node_id)
+        ][
+            "inputs"
+        ][
+            prompt_input_name
+        ] = prompt_text
+
+    # -----------------------------------------------------
+    # Arbitrary overrides
+    # -----------------------------------------------------
+
+    if overrides:
+
+        for node_id, values in overrides.items():
+
+            node_id = str(node_id)
+
+            if node_id not in workflow:
+                raise KeyError(
+                    f"Workflow node not found: "
+                    f"{node_id}"
+                )
+
+            for key, value in values.items():
+
+                workflow[
+                    node_id
+                ][
+                    "inputs"
+                ][key] = value
+
+    # -----------------------------------------------------
+    # Queue
+    # -----------------------------------------------------
+
+    prompt_id = queue_prompt(
+        workflow
+    )
+
+    print(
+        f"Queued ComfyUI prompt: "
+        f"{prompt_id}"
+    )
+
+    # -----------------------------------------------------
+    # Wait
+    # -----------------------------------------------------
+
+    history = wait_for_result(
+        prompt_id
+    )
+
+    # -----------------------------------------------------
+    # Outputs
+    # -----------------------------------------------------
+
+    output_files = extract_outputs(
+        history
+    )
+
+    results = []
+
+    for output in output_files:
+
+        content = download_output(
+            output["filename"],
+            output.get("subfolder", ""),
+            "output",
+        )
+
+        results.append({
+            "type": output["type"],
+            "filename": output["filename"],
+            "data": base64.b64encode(
+                content
+            ).decode("utf-8"),
+        })
+
+    return {
+        "prompt_id": prompt_id,
+        "outputs": results,
+    }
+
+
+# =========================================================
+# Main handler
+# =========================================================
+
+def handler(event):
+
+    try:
+
+        input_data = event.get(
+            "input",
+            {}
+        )
+
+        action = input_data.get(
+            "action",
+            "generate"
+        )
+
+        # -------------------------------------------------
+        # Health
+        # -------------------------------------------------
+
+        if action == "health":
+
+            return health_check()
+
+        # -------------------------------------------------
+        # H3 check
+        # -------------------------------------------------
+
+        if action == "h3_check":
+
+            return h3_check()
+
+        # -------------------------------------------------
+        # Generate
+        # -------------------------------------------------
+
+        if action == "generate":
+
+            workflow = input_data.get(
+                "workflow"
+            )
+
+            if workflow is None:
+
+                raise ValueError(
+                    "workflow is required"
+                )
+
+            # ---------------------------------------------
+            # Image
+            # ---------------------------------------------
+
+            image_bytes = None
+
+            image_base64 = input_data.get(
+                "image"
+            )
+
+            if image_base64:
+
+                # Allow data URI
+                if image_base64.startswith(
+                    "data:"
+                ):
+
+                    image_base64 = (
+                        image_base64
+                        .split(",", 1)[1]
+                    )
+
+                image_bytes = base64.b64decode(
+                    image_base64
+                )
+
+            # ---------------------------------------------
+            # Run
+            # ---------------------------------------------
+
+            return run_workflow(
+                workflow=workflow,
+
+                image_bytes=image_bytes,
+
+                image_filename=input_data.get(
+                    "image_filename",
+                    "input.png",
+                ),
+
+                image_node_id=input_data.get(
+                    "image_node_id"
+                ),
+
+                image_input_name=input_data.get(
+                    "image_input_name"
+                ),
+
+                prompt_node_id=input_data.get(
+                    "prompt_node_id"
+                ),
+
+                prompt_input_name=input_data.get(
+                    "prompt_input_name"
+                ),
+
+                prompt_text=input_data.get(
+                    "prompt"
+                ),
+
+                overrides=input_data.get(
+                    "overrides"
+                ),
+            )
+
+        # -------------------------------------------------
+        # Unknown action
+        # -------------------------------------------------
+
+        raise ValueError(
+            f"Unknown action: {action}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Handler error: {type(e).__name__}: {e}"
+        )
 
         return {
             "status": "error",
-            "error": str(exc),
+            "error": str(e),
+            "error_type": type(e).__name__,
         }
 
 
 # =========================================================
-# Entrypoint
+# RunPod Serverless
 # =========================================================
 
 if __name__ == "__main__":
-    logger.info("Starting RunPod Serverless handler")
 
-    try:
-        start_comfyui()
-    except Exception:
-        logger.exception(
-            "Initial ComfyUI startup failed. "
-            "The handler will retry when a job arrives."
-        )
+    print(
+        "Starting RunPod Serverless handler..."
+    )
 
     runpod.serverless.start({
         "handler": handler
