@@ -672,10 +672,11 @@ def h3_generate(job_input):
     ensure_comfyui()
 
     image_b64 = job_input.get("image")
+    image_url = job_input.get("image_url")
 
-    if not image_b64:
+    if not image_b64 and not image_url:
         raise ValueError(
-            "Missing input.image base64 data."
+            "Missing input.image or input.image_url."
         )
 
     prompt = job_input.get(
@@ -725,20 +726,45 @@ def h3_generate(job_input):
     if seed is not None:
         seed = int(seed)
 
-    if image_b64.startswith("data:"):
-        image_b64 = image_b64.split(
-            ",",
-            1,
-        )[1]
+    if image_url:
+        if not image_url.startswith(("https://", "http://")):
+            raise ValueError(
+                "input.image_url must start with http:// or https://"
+            )
 
-    try:
-        image_bytes = base64.b64decode(
-            image_b64
-        )
-    except Exception as exc:
-        raise ValueError(
-            f"Invalid base64 image: {exc}"
-        )
+        try:
+            response = requests.get(
+                image_url,
+                timeout=60,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+            image_bytes = response.content
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to download input.image_url: {exc}"
+            )
+
+        if not image_bytes:
+            raise ValueError(
+                "Downloaded image is empty."
+            )
+
+    else:
+        if image_b64.startswith("data:"):
+            image_b64 = image_b64.split(
+                ",",
+                1,
+            )[1]
+
+        try:
+            image_bytes = base64.b64decode(
+                image_b64
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid base64 image: {exc}"
+            )
 
     filename = (
         f"runpod_h3_{uuid.uuid4().hex}.png"
@@ -870,7 +896,7 @@ def run_workflow(
 
     prompt_id = queue_prompt(
         workflow
- )
+    )
 
     history = wait_for_result(
         prompt_id
