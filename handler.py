@@ -87,7 +87,7 @@ DEFAULT_TIMEOUT = 900
 # ============================================================
 
 def start_comfyui():
-    print("Starting ComfyUI...")
+    print("Starting ComfyUI...", flush=True)
 
     import subprocess
 
@@ -101,10 +101,8 @@ def start_comfyui():
             "8188",
         ],
         cwd=COMFYUI_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        stdout=None,
+        stderr=None,
     )
 
     return process
@@ -1127,9 +1125,13 @@ def handler(event):
 
 if __name__ == "__main__":
 
-    print(
-        "Starting RunPod Serverless handler..."
-    )
+    print("Starting ComfyUI...", flush=True)
+
+    start_comfyui()
+
+    wait_for_comfyui()
+
+    print("Starting RunPod Serverless handler...", flush=True)
 
     runpod.serverless.start({
         "handler": handler
