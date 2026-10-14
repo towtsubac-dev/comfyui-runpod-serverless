@@ -1,244 +1,626 @@
-import os
-import io
-import json
-import time
 import base64
-import threading
-import subprocess
+import os
+import time
+import uuid
 
 import requests
 import runpod
 
 
-# =========================================================
-# Configuration
-# =========================================================
+# ============================================================
+# ComfyUI
+# ============================================================
 
-COMFYUI_HOST = "127.0.0.1"
-COMFYUI_PORT = 8188
-COMFYUI_URL = f"http://{COMFYUI_HOST}:{COMFYUI_PORT}"
+COMFYUI_URL = "http://127.0.0.1:8188"
 
 COMFYUI_DIR = "/workspace/ComfyUI"
 
-STARTUP_TIMEOUT = 180
-POLL_INTERVAL = 1.0
-REQUEST_TIMEOUT = 30
 
-
-# =========================================================
-# MiniMax H3 model files
-# =========================================================
+# ============================================================
+# MiniMax H3 models
+# ============================================================
 
 H3_MODEL_FILES = {
-    "diffusion_model": (
+    "diffusion_model":
         "/workspace/ComfyUI/models/diffusion_models/"
-        "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-    ),
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
 
-    "text_encoder": (
+    "text_encoder":
         "/workspace/ComfyUI/models/text_encoders/"
-        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
-    ),
+        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
 
-    "video_vae": (
+    "video_vae":
         "/workspace/ComfyUI/models/vae/"
-        "minimax_h3_video_vae_int8_convrot.safetensors"
-    ),
+        "minimax_h3_video_vae_int8_convrot.safetensors",
 
-    "audio_vae": (
+    "audio_vae":
         "/workspace/ComfyUI/models/vae/"
-        "minimax_h3_audio_vae_fp32.safetensors"
-    ),
+        "minimax_h3_audio_vae_fp32.safetensors",
 
-    "turbo_lora": (
+    "turbo_lora":
         "/workspace/ComfyUI/models/loras/"
-        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
-    ),
+        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
 }
 
 
-# =========================================================
-# Global state
-# =========================================================
+H3_MODEL_NAMES = {
+    "diffusion_model":
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
 
-_comfy_process = None
-_comfy_lock = threading.Lock()
+    "text_encoder":
+        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
 
+    "video_vae":
+        "minimax_h3_video_vae_int8_convrot.safetensors",
 
-# =========================================================
-# Utility
-# =========================================================
+    "audio_vae":
+        "minimax_h3_audio_vae_fp32.safetensors",
 
-def file_info(path):
-    """
-    Return information about a model file.
-    """
-
-    exists = os.path.isfile(path)
-
-    if not exists:
-        return {
-            "exists": False,
-            "path": path,
-            "size_bytes": None,
-            "size_gb": None,
-        }
-
-    size = os.path.getsize(path)
-
-    return {
-        "exists": True,
-        "path": path,
-        "size_bytes": size,
-        "size_gb": round(size / (1024 ** 3), 3),
-    }
+    "turbo_lora":
+        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+}
 
 
-# =========================================================
+# ============================================================
+# Settings for first test
+# ============================================================
+
+DEFAULT_WIDTH = 864
+DEFAULT_HEIGHT = 480
+
+# H3 uses 17k + 5 frame grid.
+# 124 frames at 24fps is approximately 5.17 seconds.
+DEFAULT_LENGTH = 124
+
+DEFAULT_STEPS = 8
+
+DEFAULT_SHIFT_VIDEO = 12.0
+DEFAULT_SHIFT_AUDIO = 3.0
+
+DEFAULT_LORA_STRENGTH = 1.0
+
+DEFAULT_TIMEOUT = 900
+
+
+# ============================================================
 # Start ComfyUI
-# =========================================================
+# ============================================================
 
 def start_comfyui():
-    global _comfy_process
+    print("Starting ComfyUI...")
 
-    with _comfy_lock:
+    import subprocess
 
-        # Already running
-        if _comfy_process is not None:
-            if _comfy_process.poll() is None:
-                return
-
-        print("Starting ComfyUI...")
-
-        cmd = [
+    process = subprocess.Popen(
+        [
             "python",
-            os.path.join(COMFYUI_DIR, "main.py"),
+            "main.py",
             "--listen",
-            COMFYUI_HOST,
+            "127.0.0.1",
             "--port",
-            str(COMFYUI_PORT),
-        ]
+            "8188",
+        ],
+        cwd=COMFYUI_DIR,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
 
-        _comfy_process = subprocess.Popen(
-            cmd,
-            cwd=COMFYUI_DIR,
-            stdout=None,
-            stderr=None,
-        )
+    return process
 
-    # Wait until ComfyUI responds
-    start_time = time.time()
 
-    while time.time() - start_time < STARTUP_TIMEOUT:
+# ============================================================
+# Wait for ComfyUI
+# ============================================================
 
+def wait_for_comfyui(timeout=180):
+    print("Waiting for ComfyUI...")
+
+    start = time.time()
+
+    while time.time() - start < timeout:
         try:
-            r = requests.get(
+            response = requests.get(
                 f"{COMFYUI_URL}/system_stats",
                 timeout=5,
             )
 
-            if r.status_code == 200:
+            if response.status_code == 200:
                 print("ComfyUI is ready.")
-                return
+                return True
 
         except Exception:
             pass
 
-        time.sleep(1)
+        time.sleep(2)
 
-    raise RuntimeError(
-        "ComfyUI did not become ready within timeout."
+    raise RuntimeError("ComfyUI did not become ready in time.")
+
+
+# ============================================================
+# HTTP helper
+# ============================================================
+
+def comfy_get(path, params=None):
+    response = requests.get(
+        f"{COMFYUI_URL}{path}",
+        params=params,
+        timeout=30,
     )
 
+    response.raise_for_status()
 
-# =========================================================
-# Ensure ComfyUI
-# =========================================================
+    return response
 
-def ensure_comfyui():
-    try:
-        r = requests.get(
-            f"{COMFYUI_URL}/system_stats",
-            timeout=5,
+
+# ============================================================
+# Upload image
+# ============================================================
+
+def upload_image(image_bytes, filename="input.png"):
+    response = requests.post(
+        f"{COMFYUI_URL}/upload/image",
+        files={
+            "image": (
+                filename,
+                image_bytes,
+                "application/octet-stream",
+            )
+        },
+        data={
+            "overwrite": "true",
+        },
+        timeout=60,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    print("Uploaded image:", data)
+
+    return data["name"]
+
+
+# ============================================================
+# Build H3 I2V workflow
+# ============================================================
+
+def build_h3_i2v_workflow(
+    image_filename,
+    prompt,
+    width=DEFAULT_WIDTH,
+    height=DEFAULT_HEIGHT,
+    length=DEFAULT_LENGTH,
+    steps=DEFAULT_STEPS,
+    seed=None,
+):
+    if seed is None:
+        seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
+
+    workflow = {
+        # ----------------------------------------------------
+        # Load input image
+        # ----------------------------------------------------
+
+        "1": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": image_filename,
+            },
+        },
+
+        # ----------------------------------------------------
+        # H3 diffusion model
+        # ----------------------------------------------------
+
+        "2": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": H3_MODEL_NAMES["diffusion_model"],
+                "weight_dtype": "default",
+            },
+        },
+
+        # ----------------------------------------------------
+        # H3 text encoder
+        # ----------------------------------------------------
+
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": H3_MODEL_NAMES["text_encoder"],
+                "type": "minimax",
+                "device": "default",
+            },
+        },
+
+        # ----------------------------------------------------
+        # Video VAE
+        # ----------------------------------------------------
+
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": H3_MODEL_NAMES["video_vae"],
+            },
+        },
+
+        # ----------------------------------------------------
+        # Audio VAE
+        # ----------------------------------------------------
+
+        "5": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": H3_MODEL_NAMES["audio_vae"],
+            },
+        },
+
+        # ----------------------------------------------------
+        # MiniMax H3 Image to Video
+        # ----------------------------------------------------
+
+        "6": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": {
+                "clip": ["3", 0],
+                "vae": ["4", 0],
+
+                "first_frame": ["1", 0],
+
+                "prompt": prompt,
+
+                "width": width,
+                "height": height,
+                "length": length,
+            },
+        },
+
+        # ----------------------------------------------------
+        # H3 AV latent
+        # ----------------------------------------------------
+
+        "7": {
+            "class_type": "EmptyMiniMaxH3LatentAV",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "length": length,
+            },
+        },
+
+        # ----------------------------------------------------
+        # H3 Sigma Shift
+        # ----------------------------------------------------
+
+        "8": {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {
+                "model": ["2", 0],
+                "shift_video": DEFAULT_SHIFT_VIDEO,
+                "shift_audio": DEFAULT_SHIFT_AUDIO,
+            },
+        },
+
+        # ----------------------------------------------------
+        # Turbo LoRA
+        # ----------------------------------------------------
+
+        "9": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["8", 0],
+                "lora_name": H3_MODEL_NAMES["turbo_lora"],
+                "strength_model": DEFAULT_LORA_STRENGTH,
+            },
+        },
+
+        # ----------------------------------------------------
+        # Sampler selection
+        # Official H3 workflow uses res_multistep.
+        # ----------------------------------------------------
+
+        "10": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+
+        # ----------------------------------------------------
+        # Scheduler
+        # ----------------------------------------------------
+
+        "11": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["9", 0],
+                "scheduler": "simple",
+                "steps": steps,
+                "denoise": 1.0,
+            },
+        },
+
+        # ----------------------------------------------------
+        # Guidance
+        # ----------------------------------------------------
+
+        "12": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["9", 0],
+                "conditioning": ["6", 0],
+            },
+        },
+
+        # ----------------------------------------------------
+        # Random noise
+        # ----------------------------------------------------
+
+        "13": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": seed,
+            },
+        },
+
+        # ----------------------------------------------------
+        # Advanced sampler
+        # ----------------------------------------------------
+
+        "14": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["13", 0],
+                "guider": ["12", 0],
+                "sampler": ["10", 0],
+                "sigmas": ["11", 0],
+                "latent_image": ["7", 0],
+            },
+        },
+
+        # ----------------------------------------------------
+        # Video VAE decode
+        # ----------------------------------------------------
+
+        "15": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["14", 0],
+                "vae": ["4", 0],
+            },
+        },
+
+        # ----------------------------------------------------
+        # Audio VAE decode
+        # ----------------------------------------------------
+
+        "16": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": ["14", 0],
+                "vae": ["5", 0],
+            },
+        },
+
+        # ----------------------------------------------------
+        # Create video with native H3 audio
+        # ----------------------------------------------------
+
+        "17": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["15", 0],
+                "audio": ["16", 0],
+                "fps": 24,
+                "bit_depth": 8,
+            },
+        },
+
+        # ----------------------------------------------------
+        # Save MP4
+        # ----------------------------------------------------
+
+        "18": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["17", 0],
+                "filename_prefix": "video/MiniMax_H3",
+                "format": "mp4",
+                "codec": "h264",
+            },
+        },
+    }
+
+    return workflow
+
+
+# ============================================================
+# Wait for ComfyUI job
+# ============================================================
+
+def wait_for_prompt(prompt_id, timeout=DEFAULT_TIMEOUT):
+    print("Waiting for prompt:", prompt_id)
+
+    start = time.time()
+
+    while time.time() - start < timeout:
+        response = comfy_get(
+            f"/history/{prompt_id}"
         )
 
-        if r.status_code == 200:
-            return
+        history = response.json()
 
-    except Exception:
-        pass
+        if prompt_id in history:
+            record = history[prompt_id]
 
-    start_comfyui()
+            status = record.get("status", {})
 
+            status_str = status.get(
+                "status_str",
+                "",
+            )
 
-# =========================================================
-# Health check
-# =========================================================
+            print("ComfyUI status:", status_str)
 
-def health_check():
+            if status_str == "success":
+                return record
 
-    ensure_comfyui()
+            if status_str in (
+                "error",
+                "failed",
+                "canceled",
+            ):
+                raise RuntimeError(
+                    f"ComfyUI job failed: {record}"
+                )
 
-    r = requests.get(
-        f"{COMFYUI_URL}/system_stats",
-        timeout=REQUEST_TIMEOUT,
+        time.sleep(2)
+
+    raise TimeoutError(
+        f"ComfyUI job timed out after {timeout} seconds."
     )
 
-    r.raise_for_status()
+
+# ============================================================
+# Download generated file
+# ============================================================
+
+def download_output_file(file_info):
+    filename = file_info["filename"]
+    subfolder = file_info.get("subfolder", "")
+    file_type = file_info.get("type", "output")
+
+    response = comfy_get(
+        "/view",
+        params={
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": file_type,
+        },
+    )
+
+    return response.content
+
+
+# ============================================================
+# Extract video from history
+# ============================================================
+
+def extract_video(record):
+    outputs = record.get("outputs", {})
+
+    # SaveVideo currently reports its saved video
+    # under the "images" key.
+    for node_id, node_output in outputs.items():
+
+        for key in (
+            "images",
+            "gifs",
+            "videos",
+        ):
+            items = node_output.get(key)
+
+            if not items:
+                continue
+
+            for item in items:
+
+                filename = item.get("filename", "")
+
+                if not filename:
+                    continue
+
+                lower = filename.lower()
+
+                if lower.endswith(
+                    (
+                        ".mp4",
+                        ".mkv",
+                        ".webm",
+                        ".mov",
+                    )
+                ):
+                    return download_output_file(item), {
+                        "node_id": node_id,
+                        "filename": filename,
+                        "subfolder": item.get(
+                            "subfolder",
+                            "",
+                        ),
+                    }
+
+    raise RuntimeError(
+        f"No video output found in ComfyUI history: {outputs}"
+    )
+
+
+# ============================================================
+# Health
+# ============================================================
+
+def health():
+    response = comfy_get("/system_stats")
+
+    stats = response.json()
 
     return {
         "status": "ok",
         "message": "ComfyUI is running",
-        "system_stats": r.json(),
+        "system_stats": stats,
     }
 
 
-# =========================================================
-# H3 model check
-# =========================================================
+# ============================================================
+# H3 check
+# ============================================================
 
 def h3_check():
-
-    ensure_comfyui()
-
-    # -----------------------------------------------------
-    # Check model files
-    # -----------------------------------------------------
-
     models = {}
 
+    all_models_ok = True
+
     for name, path in H3_MODEL_FILES.items():
-        models[name] = file_info(path)
 
-    models_ok = all(
-        item["exists"]
-        for item in models.values()
-    )
+        exists = os.path.isfile(path)
 
-    # -----------------------------------------------------
-    # Check ComfyUI H3 nodes
-    # -----------------------------------------------------
-
-    h3_nodes = {}
-    object_info_error = None
-
-    try:
-
-        r = requests.get(
-            f"{COMFYUI_URL}/object_info",
-            timeout=REQUEST_TIMEOUT,
+        size_bytes = (
+            os.path.getsize(path)
+            if exists
+            else 0
         )
 
-        r.raise_for_status()
+        models[name] = {
+            "exists": exists,
+            "path": path,
+            "size_bytes": size_bytes,
+            "size_gb": round(
+                size_bytes / (1024 ** 3),
+                3,
+            ),
+        }
 
-        object_info = r.json()
+        if not exists:
+            all_models_ok = False
+
+    object_info_error = None
+    h3_nodes = {}
+
+    try:
+        response = comfy_get("/object_info")
+
+        object_info = response.json()
 
         for node_name, node_data in object_info.items():
 
+            lower = node_name.lower()
+
             if (
-                "MiniMaxH3" in node_name
-                or "MiniMax" in node_name
-                or "H3" in node_name
+                "minimaxh3" in lower
+                or "minimax" in lower
+                or lower == "emptymanimaxh3latentav"
             ):
                 h3_nodes[node_name] = {
                     "display_name": node_data.get(
@@ -249,219 +631,187 @@ def h3_check():
                     ),
                 }
 
-    except Exception as e:
+    except Exception as exc:
+        object_info_error = str(exc)
 
-        object_info_error = str(e)
-
-    nodes_ok = len(h3_nodes) > 0
-
-    # -----------------------------------------------------
-    # Result
-    # -----------------------------------------------------
+    native_i2v_exists = (
+        "MiniMaxH3ImageToVideo" in h3_nodes
+    )
 
     return {
-        "status": "ok",
+        "status": "ok"
+        if all_models_ok and native_i2v_exists
+        else "error",
 
-        "h3_ready": (
-            models_ok
-            and nodes_ok
+        "h3_ready":
+            all_models_ok and native_i2v_exists,
+
+        "models_ok":
+            all_models_ok,
+
+        "nodes_ok":
+            native_i2v_exists,
+
+        "models":
+            models,
+
+        "h3_nodes":
+            h3_nodes,
+
+        "object_info_error":
+            object_info_error,
+    }
+
+
+# ============================================================
+# H3 image-to-video generation
+# ============================================================
+
+def h3_generate(job_input):
+    image_b64 = job_input.get("image")
+
+    if not image_b64:
+        raise ValueError(
+            "Missing input.image base64 data."
+        )
+
+    prompt = job_input.get(
+        "prompt",
+        (
+            "Create a natural cinematic video "
+            "from the input image. "
+            "Preserve the subject identity and "
+            "overall composition. "
+            "Use smooth realistic motion and "
+            "subtle camera movement. "
+            "Audio: natural ambient sound "
+            "appropriate to the scene."
         ),
-
-        "models_ok": models_ok,
-        "nodes_ok": nodes_ok,
-
-        "models": models,
-
-        "h3_nodes": h3_nodes,
-
-        "object_info_error": object_info_error,
-    }
-
-
-# =========================================================
-# Upload image
-# =========================================================
-
-def upload_image(image_bytes, filename="input.png"):
-
-    ensure_comfyui()
-
-    files = {
-        "image": (
-            filename,
-            io.BytesIO(image_bytes),
-            "image/png",
-        )
-    }
-
-    data = {
-        "overwrite": "true",
-    }
-
-    r = requests.post(
-        f"{COMFYUI_URL}/upload/image",
-        files=files,
-        data=data,
-        timeout=REQUEST_TIMEOUT,
     )
 
-    r.raise_for_status()
+    width = int(
+        job_input.get(
+            "width",
+            DEFAULT_WIDTH,
+        )
+    )
 
-    result = r.json()
+    height = int(
+        job_input.get(
+            "height",
+            DEFAULT_HEIGHT,
+        )
+    )
 
-    return result["name"]
+    length = int(
+        job_input.get(
+            "length",
+            DEFAULT_LENGTH,
+        )
+    )
 
+    steps = int(
+        job_input.get(
+            "steps",
+            DEFAULT_STEPS,
+        )
+    )
 
-# =========================================================
-# Queue workflow
-# =========================================================
+    seed = job_input.get("seed")
 
-def queue_prompt(workflow):
+    if seed is not None:
+        seed = int(seed)
 
-    ensure_comfyui()
+    # Remove optional data URI prefix.
+    if "," in image_b64 and image_b64.startswith(
+        "data:"
+    ):
+        image_b64 = image_b64.split(
+            ",",
+            1,
+        )[1]
 
-    payload = {
-        "prompt": workflow,
-    }
+    try:
+        image_bytes = base64.b64decode(
+            image_b64
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid base64 image: {exc}"
+        )
 
-    r = requests.post(
+    # --------------------------------------------------------
+    # Upload input image
+    # --------------------------------------------------------
+
+    filename = (
+        f"runpod_h3_{uuid.uuid4().hex}.png"
+    )
+
+    uploaded_filename = upload_image(
+        image_bytes,
+        filename,
+    )
+
+    # --------------------------------------------------------
+    # Build workflow
+    # --------------------------------------------------------
+
+    workflow = build_h3_i2v_workflow(
+        image_filename=uploaded_filename,
+        prompt=prompt,
+        width=width,
+        height=height,
+        length=length,
+        steps=steps,
+        seed=seed,
+    )
+
+    # --------------------------------------------------------
+    # Queue workflow
+    # --------------------------------------------------------
+
+    client_id = str(uuid.uuid4())
+
+    response = requests.post(
         f"{COMFYUI_URL}/prompt",
-        json=payload,
-        timeout=REQUEST_TIMEOUT,
+        json={
+            "prompt": workflow,
+            "client_id": client_id,
+        },
+        timeout=60,
     )
 
-    r.raise_for_status()
-
-    result = r.json()
-
-    if "error" in result:
+    if response.status_code != 200:
         raise RuntimeError(
-            f"ComfyUI prompt error: {result}"
+            "ComfyUI /prompt failed: "
+            f"{response.status_code} "
+            f"{response.text}"
         )
 
-    return result["prompt_id"]
+    queue_result = response.json()
 
-
-# =========================================================
-# Wait for workflow
-# =========================================================
-
-def wait_for_result(prompt_id, timeout=1800):
-
-    start_time = time.time()
-
-    while True:
-
-        if time.time() - start_time > timeout:
-            raise TimeoutError(
-                f"Workflow timeout: {prompt_id}"
-            )
-
-        try:
-
-            r = requests.get(
-                f"{COMFYUI_URL}/history/{prompt_id}",
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            if r.status_code == 200:
-
-                history = r.json()
-
-                if prompt_id in history:
-
-                    result = history[prompt_id]
-
-                    status = result.get(
-                        "status",
-                        {}
-                    )
-
-                    status_str = status.get(
-                        "status_str"
-                    )
-
-                    if status_str == "error":
-                        raise RuntimeError(
-                            f"ComfyUI execution error: "
-                            f"{result}"
-                        )
-
-                    if status.get(
-                        "completed",
-                        False
-                    ):
-                        return result
-
-        except requests.RequestException:
-            pass
-
-        time.sleep(POLL_INTERVAL)
-
-
-# =========================================================
-# Download ComfyUI output
-# =========================================================
-
-def download_output(
-    filename,
-    subfolder="",
-    folder_type="output",
-):
-
-    params = {
-        "filename": filename,
-        "subfolder": subfolder,
-        "type": folder_type,
-    }
-
-    r = requests.get(
-        f"{COMFYUI_URL}/view",
-        params=params,
-        timeout=REQUEST_TIMEOUT,
+    print(
+        "ComfyUI queue result:",
+        queue_result,
     )
 
-    r.raise_for_status()
+    if queue_result.get("node_errors"):
+        raise RuntimeError(
+            "ComfyUI node validation failed: "
+            f"{queue_result['node_errors']}"
+        )
 
-    return r.content
-
-
-# =========================================================
-# Extract outputs
-# =========================================================
-
-def extract_outputs(history):
-
-    outputs = []
-
-    result_outputs = history.get(
-        "outputs",
-        {}
+    prompt_id = queue_result.get(
+        "prompt_id"
     )
 
-    for node_id, node_output in result_outputs.items():
+    if not prompt_id:
+        raise RuntimeError(
+            f"No prompt_id returned: {queue_result}"
+        )
 
-        # -------------------------------------------------
-        # Videos
-        # -------------------------------------------------
-
-        for video in node_output.get(
-            "gifs",
-            []
-        ):
-
-            outputs.append({
-                "type": "video",
-                "filename": video.get(
-                    "filename"
-                ),
-                "subfolder": video.get(
-                    "subfolder",
-                    ""
-                ),
-                "format": video.get(
-                    "format"
-                ),
+    # ----------------------------------------------,
             })
 
         # -------------------------------------------------
