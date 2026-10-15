@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime
+FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
@@ -40,13 +40,17 @@ RUN pip install --break-system-packages \
     huggingface_hub
 
 # ---------------------------------------------------------
-# SageAttention 2.2.0.post6
-# PyTorch 2.12.x / CUDA 13.0 / RTX 4090 (SM89)
+# SageAttention 2.2.0
+#
+# PyTorch 2.12.0
+# CUDA 13.0
+# Python 3.12
+# RTX 4090 / SM89
 # ---------------------------------------------------------
 
 RUN pip install --break-system-packages \
     --no-cache-dir \
-    sageattention==2.2.0.post6
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
 
 # ---------------------------------------------------------
 # MiniMax H3 directories
@@ -66,7 +70,8 @@ RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
-    filename='diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors', \
+    filename='minimax_h3_fl2va_pruned_int8_convrot.safetensors', \
+    subfolder='diffusion_models', \
     local_dir='/workspace/ComfyUI/models' \
 )"
 
@@ -78,7 +83,8 @@ RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
-    filename='text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', \
+    filename='qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', \
+    subfolder='text_encoders', \
     local_dir='/workspace/ComfyUI/models' \
 )"
 
@@ -90,7 +96,8 @@ RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
-    filename='vae/minimax_h3_video_vae_int8_convrot.safetensors', \
+    filename='minimax_h3_video_vae_int8_convrot.safetensors', \
+    subfolder='vae', \
     local_dir='/workspace/ComfyUI/models' \
 )"
 
@@ -102,7 +109,8 @@ RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
-    filename='vae/minimax_h3_audio_vae_fp32.safetensors', \
+    filename='minimax_h3_audio_vae_fp32.safetensors', \
+    subfolder='vae', \
     local_dir='/workspace/ComfyUI/models' \
 )"
 
