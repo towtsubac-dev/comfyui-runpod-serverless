@@ -610,9 +610,7 @@ def h3_check():
             all_models_ok = False
 
     object_info_error = None
-    t2v_info = object_info.get(
-    "ComfyCloudMiniMaxH3TextToVideoNode"
-    )
+    
     h3_nodes = {}
 
     try:
@@ -663,9 +661,7 @@ def h3_check():
         "nodes_ok": native_i2v_exists,
         "models": models,
         "h3_nodes": h3_nodes,
-        "object_info_error":
-            object_info_error,
-        "t2v_info": t2v_info,
+        "object_info_error": object_info_error,
     }
 
 
