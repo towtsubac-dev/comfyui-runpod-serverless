@@ -40,6 +40,16 @@ RUN pip install --break-system-packages \
     huggingface_hub
 
 # ---------------------------------------------------------
+# SageAttention 2.2.0
+# RTX 4090 / PyTorch 2.12.1 / CUDA 13.0
+# ---------------------------------------------------------
+
+RUN pip install --break-system-packages \
+    --no-cache-dir \
+    sageattention==2.2.0 \
+    --index-url https://wheels.astral.sh/simple/cu130/
+
+# ---------------------------------------------------------
 # MiniMax H3 directories
 # ---------------------------------------------------------
 
