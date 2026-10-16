@@ -41,6 +41,18 @@ H3_MODEL_FILES = {
     "turbo_lora":
         "/workspace/ComfyUI/models/loras/"
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+
+    "hmnsfw_lora":
+        "/workspace/ComfyUI/models/loras/"
+        "HMNSFW-AIO-V2.5.safetensors",
+
+    "free_pussy_lora":
+        "/workspace/ComfyUI/models/loras/"
+        "MM-H3 - Pussy Lora.safetensors",
+
+    "hmpenis_lora":
+        "/workspace/ComfyUI/models/loras/"
+        "HMPenis_v2_e35.safetensors",
 }
 
 H3_MODEL_NAMES = {
@@ -54,7 +66,55 @@ H3_MODEL_NAMES = {
         "minimax_h3_audio_vae_fp32.safetensors",
     "turbo_lora":
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+
+    "hmnsfw_lora":
+        "HMNSFW-AIO-V2.5.safetensors",
+
+    "free_pussy_lora":
+        "MM-H3 - Pussy Lora.safetensors",
+
+    "hmpenis_lora":
+        "HMPenis_v2_e35.safetensors",
 }
+
+
+OPTIONAL_LORA_CONFIG = {
+    "hmnsfw": {
+        "model_key": "hmnsfw_lora",
+        "trigger": "hmmotion",
+        "strength": 0.7,
+    },
+    "free_pussy": {
+        "model_key": "free_pussy_lora",
+        "trigger": "pussy",
+        "strength": 1.0,
+    },
+    "hmpenis": {
+        "model_key": "hmpenis_lora",
+        "trigger": "HMPenis",
+        "strength": 1.0,
+    },
+}
+
+
+def resolve_optional_lora(job_input, prompt):
+    selection = str(job_input.get("lora", "none")).strip().lower()
+
+    if selection in ("", "none"):
+        return prompt, None
+
+    config = OPTIONAL_LORA_CONFIG.get(selection)
+    if config is None:
+        raise ValueError("Unsupported optional LoRA selection.")
+
+    trigger = config["trigger"]
+    if trigger.lower() not in prompt.lower():
+        prompt = f"{trigger}, {prompt}"
+
+    return prompt, {
+        "lora_name": H3_MODEL_NAMES[config["model_key"]],
+        "strength": config["strength"],
+    }
 
 
 # ============================================================
@@ -365,6 +425,7 @@ def build_h3_i2v_workflow(
     length=DEFAULT_LENGTH,
     steps=DEFAULT_STEPS,
     seed=None,
+    optional_lora=None,
 ):
     if seed is None:
         seed = (
@@ -375,7 +436,7 @@ def build_h3_i2v_workflow(
             % 10_000_000_000
         )
 
-    return {
+    workflow = {
         "1": {
             "class_type": "LoadImage",
             "inputs": {
@@ -563,16 +624,30 @@ def build_h3_i2v_workflow(
         },
     }
 
+    if optional_lora:
+        workflow["19"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["9", 0],
+                "lora_name": optional_lora["lora_name"],
+                "strength_model": optional_lora["strength"],
+            },
+        }
+        workflow["11"]["inputs"]["model"] = ["19", 0]
+        workflow["12"]["inputs"]["model"] = ["19", 0]
+
+    return workflow
+
 
 # ============================================================
 # Build H3 T2V workflow
 # ============================================================
 
-def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, length=DEFAULT_LENGTH, steps=DEFAULT_STEPS, seed=None):
+def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, length=DEFAULT_LENGTH, steps=DEFAULT_STEPS, seed=None, optional_lora=None):
     if seed is None:
         seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
 
-    return {
+    workflow = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": H3_MODEL_NAMES["diffusion_model"], "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": H3_MODEL_NAMES["text_encoder"], "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": H3_MODEL_NAMES["video_vae"]}},
@@ -591,6 +666,20 @@ def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, le
         "16": {"class_type": "CreateVideo", "inputs": {"images": ["14", 0], "audio": ["15", 0], "fps": 24, "bit_depth": 8}},
         "17": {"class_type": "SaveVideo", "inputs": {"video": ["16", 0], "filename_prefix": "video/MiniMax_H3_T2V", "format": "mp4", "codec": "h264"}},
     }
+
+    if optional_lora:
+        workflow["18"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["8", 0],
+                "lora_name": optional_lora["lora_name"],
+                "strength_model": optional_lora["strength"],
+            },
+        }
+        workflow["10"]["inputs"]["model"] = ["18", 0]
+        workflow["11"]["inputs"]["model"] = ["18", 0]
+
+    return workflow
 
 
 # ============================================================
@@ -707,6 +796,7 @@ def h3_t2v_generate(job_input):
     prompt = job_input.get("prompt")
     if not prompt:
         raise ValueError("Missing input.prompt.")
+    prompt, optional_lora = resolve_optional_lora(job_input, prompt)
     width = int(job_input.get("width", DEFAULT_WIDTH))
     height = int(job_input.get("height", DEFAULT_HEIGHT))
     length = int(job_input.get("length", DEFAULT_LENGTH))
@@ -714,7 +804,7 @@ def h3_t2v_generate(job_input):
     seed = job_input.get("seed")
     if seed is not None:
         seed = int(seed)
-    workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed)
+    workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_lora=optional_lora)
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
     results = []
@@ -752,6 +842,8 @@ def h3_generate(job_input):
             "appropriate to the scene."
         ),
     )
+
+    prompt, optional_lora = resolve_optional_lora(job_input, prompt)
 
     width = int(
         job_input.get(
@@ -843,6 +935,7 @@ def h3_generate(job_input):
         length=length,
         steps=steps,
         seed=seed,
+        optional_lora=optional_lora,
     )
 
     prompt_id = queue_prompt(workflow)
