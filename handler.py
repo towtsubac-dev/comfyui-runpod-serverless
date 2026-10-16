@@ -980,8 +980,8 @@ def handler(event):
         if action == "h3_check":
             return h3_check()
 
-        if action == "h3_t2v_schema":
-            return h3_t2v_schema()
+        if action == "h3_i2v_schema":
+            return h3_i2v_schema()
 
         if action == "h3_generate":
             return h3_generate(
