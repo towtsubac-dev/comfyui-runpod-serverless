@@ -697,23 +697,6 @@ def h3_check():
 # H3 native I2V node schema
 # ============================================================
 
-def h3_i2v_schema():
-    try:
-        response = comfy_get(
-            "/object_info/MiniMaxH3ImageToVideo"
-        )
-
-        return {
-            "status": "ok",
-            "i2v_node": response.json(),
-        }
-
-    except Exception as exc:
-        return {
-            "status": "error",
-            "error": str(exc),
-            "error_type": type(exc).__name__,
-        }
 
 # ============================================================
 # H3 text-to-video generation
@@ -1034,9 +1017,6 @@ def handler(event):
 
         if action == "h3_check":
             return h3_check()
-
-        if action == "h3_i2v_schema":
-            return h3_i2v_schema()
 
         if action == "h3_generate":
             return h3_generate(
