@@ -97,24 +97,86 @@ OPTIONAL_LORA_CONFIG = {
 }
 
 
-def resolve_optional_lora(job_input, prompt):
-    selection = str(job_input.get("lora", "none")).strip().lower()
+def resolve_optional_loras(job_input, prompt):
+    requested = job_input.get("loras")
+    if requested is None:
+        # Backward compatibility with requests using the former single-LoRA field.
+        selection = str(job_input.get("lora", "none")).strip().lower()
+        requested = [] if selection in ("", "none") else [
+            {
+                "name": selection,
+                "strength": OPTIONAL_LORA_CONFIG.get(selection, {}).get("strength"),
+            }
+        ]
 
-    if selection in ("", "none"):
-        return prompt, None
+    if not isinstance(requested, list):
+        raise ValueError("input.loras must be a list.")
 
-    config = OPTIONAL_LORA_CONFIG.get(selection)
-    if config is None:
-        raise ValueError("Unsupported optional LoRA selection.")
+    selected = []
+    seen = set()
+    added_triggers = []
 
-    trigger = config["trigger"]
-    if trigger.lower() not in prompt.lower():
-        prompt = f"{trigger}, {prompt}"
+    for item in requested:
+        if not isinstance(item, dict):
+            raise ValueError("Each input.loras item must be an object.")
 
-    return prompt, {
-        "lora_name": H3_MODEL_NAMES[config["model_key"]],
-        "strength": config["strength"],
-    }
+        selection = str(item.get("name", "")).strip().lower()
+        config = OPTIONAL_LORA_CONFIG.get(selection)
+        if config is None:
+            raise ValueError(f"Unsupported optional LoRA selection: {selection}")
+
+        if selection in seen:
+            raise ValueError(f"Duplicate optional LoRA selection: {selection}")
+        seen.add(selection)
+
+        raw_strength = item.get("strength", config["strength"])
+        try:
+            strength = float(raw_strength)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid strength for {selection}.")
+
+        if not 0.0 <= strength <= 1.5:
+            raise ValueError(f"Strength for {selection} must be between 0.0 and 1.5.")
+
+        trigger = config["trigger"]
+        trigger_added = trigger.lower() not in prompt.lower()
+        if trigger_added:
+            prompt = f"{trigger}, {prompt}"
+
+        selected.append({
+            "key": selection,
+            "lora_name": H3_MODEL_NAMES[config["model_key"]],
+            "strength": strength,
+            "trigger": trigger,
+        })
+        added_triggers.append({
+            "name": selection,
+            "trigger": trigger,
+            "added": trigger_added,
+        })
+
+    return prompt, selected, added_triggers
+
+
+def log_lora_selection(mode, optional_loras, added_triggers):
+    print(f"[H3] mode={mode}", flush=True)
+    print(f"[LoRA] turbo=1.0", flush=True)
+
+    if not optional_loras:
+        print("[LoRA] optional=none", flush=True)
+        return
+
+    for item in optional_loras:
+        print(
+            f"[LoRA] optional={item['key']} strength={item['strength']:.2f}",
+            flush=True,
+        )
+
+    for item in added_triggers:
+        print(
+            f"[LoRA] trigger={item['trigger']} added={str(item['added']).lower()}",
+            flush=True,
+        )
 
 
 # ============================================================
@@ -425,7 +487,7 @@ def build_h3_i2v_workflow(
     length=DEFAULT_LENGTH,
     steps=DEFAULT_STEPS,
     seed=None,
-    optional_lora=None,
+    optional_loras=None,
 ):
     if seed is None:
         seed = (
@@ -624,17 +686,22 @@ def build_h3_i2v_workflow(
         },
     }
 
-    if optional_lora:
-        workflow["19"] = {
-            "class_type": "LoraLoaderModelOnly",
-            "inputs": {
-                "model": ["9", 0],
-                "lora_name": optional_lora["lora_name"],
-                "strength_model": optional_lora["strength"],
-            },
-        }
-        workflow["11"]["inputs"]["model"] = ["19", 0]
-        workflow["12"]["inputs"]["model"] = ["19", 0]
+    if optional_loras:
+        previous_model_node = "9"
+        for index, lora in enumerate(optional_loras, start=19):
+            node_id = str(index)
+            workflow[node_id] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [previous_model_node, 0],
+                    "lora_name": lora["lora_name"],
+                    "strength_model": lora["strength"],
+                },
+            }
+            previous_model_node = node_id
+
+        workflow["11"]["inputs"]["model"] = [previous_model_node, 0]
+        workflow["12"]["inputs"]["model"] = [previous_model_node, 0]
 
     return workflow
 
@@ -643,7 +710,7 @@ def build_h3_i2v_workflow(
 # Build H3 T2V workflow
 # ============================================================
 
-def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, length=DEFAULT_LENGTH, steps=DEFAULT_STEPS, seed=None, optional_lora=None):
+def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, length=DEFAULT_LENGTH, steps=DEFAULT_STEPS, seed=None, optional_loras=None):
     if seed is None:
         seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
 
@@ -667,17 +734,22 @@ def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, le
         "17": {"class_type": "SaveVideo", "inputs": {"video": ["16", 0], "filename_prefix": "video/MiniMax_H3_T2V", "format": "mp4", "codec": "h264"}},
     }
 
-    if optional_lora:
-        workflow["18"] = {
-            "class_type": "LoraLoaderModelOnly",
-            "inputs": {
-                "model": ["8", 0],
-                "lora_name": optional_lora["lora_name"],
-                "strength_model": optional_lora["strength"],
-            },
-        }
-        workflow["10"]["inputs"]["model"] = ["18", 0]
-        workflow["11"]["inputs"]["model"] = ["18", 0]
+    if optional_loras:
+        previous_model_node = "8"
+        for index, lora in enumerate(optional_loras, start=18):
+            node_id = str(index)
+            workflow[node_id] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [previous_model_node, 0],
+                    "lora_name": lora["lora_name"],
+                    "strength_model": lora["strength"],
+                },
+            }
+            previous_model_node = node_id
+
+        workflow["10"]["inputs"]["model"] = [previous_model_node, 0]
+        workflow["11"]["inputs"]["model"] = [previous_model_node, 0]
 
     return workflow
 
@@ -796,7 +868,8 @@ def h3_t2v_generate(job_input):
     prompt = job_input.get("prompt")
     if not prompt:
         raise ValueError("Missing input.prompt.")
-    prompt, optional_lora = resolve_optional_lora(job_input, prompt)
+    prompt, optional_loras, added_triggers = resolve_optional_loras(job_input, prompt)
+    log_lora_selection("T2V", optional_loras, added_triggers)
     width = int(job_input.get("width", DEFAULT_WIDTH))
     height = int(job_input.get("height", DEFAULT_HEIGHT))
     length = int(job_input.get("length", DEFAULT_LENGTH))
@@ -804,7 +877,7 @@ def h3_t2v_generate(job_input):
     seed = job_input.get("seed")
     if seed is not None:
         seed = int(seed)
-    workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_lora=optional_lora)
+    workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
     results = []
@@ -843,7 +916,8 @@ def h3_generate(job_input):
         ),
     )
 
-    prompt, optional_lora = resolve_optional_lora(job_input, prompt)
+    prompt, optional_loras, added_triggers = resolve_optional_loras(job_input, prompt)
+    log_lora_selection("I2V", optional_loras, added_triggers)
 
     width = int(
         job_input.get(
@@ -935,7 +1009,7 @@ def h3_generate(job_input):
         length=length,
         steps=steps,
         seed=seed,
-        optional_lora=optional_lora,
+        optional_loras=optional_loras,
     )
 
     prompt_id = queue_prompt(workflow)
