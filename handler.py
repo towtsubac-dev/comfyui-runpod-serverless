@@ -665,18 +665,18 @@ def h3_check():
     }
 
 # ============================================================
-# H3 T2V schema
+# H3 native I2V node schema
 # ============================================================
 
-def h3_t2v_schema():
+def h3_i2v_schema():
     try:
         response = comfy_get(
-            "/object_info/ComfyCloudMiniMaxH3TextToVideoNode"
+            "/object_info/MiniMaxH3ImageToVideo"
         )
 
         return {
             "status": "ok",
-            "t2v_node": response.json(),
+            "i2v_node": response.json(),
         }
 
     except Exception as exc:
