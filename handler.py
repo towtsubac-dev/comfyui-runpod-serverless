@@ -565,6 +565,35 @@ def build_h3_i2v_workflow(
 
 
 # ============================================================
+# Build H3 T2V workflow
+# ============================================================
+
+def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, length=DEFAULT_LENGTH, steps=DEFAULT_STEPS, seed=None):
+    if seed is None:
+        seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
+
+    return {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": H3_MODEL_NAMES["diffusion_model"], "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": H3_MODEL_NAMES["text_encoder"], "type": "minimax", "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": H3_MODEL_NAMES["video_vae"]}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": H3_MODEL_NAMES["audio_vae"]}},
+        "5": {"class_type": "MiniMaxH3ImageToVideo", "inputs": {"clip": ["2", 0], "vae": ["3", 0], "prompt": prompt, "width": width, "height": height, "length": length}},
+        "6": {"class_type": "EmptyMiniMaxH3LatentAV", "inputs": {"width": width, "height": height, "length": length}},
+        "7": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["1", 0], "shift_video": DEFAULT_SHIFT_VIDEO, "shift_audio": DEFAULT_SHIFT_AUDIO}},
+        "8": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["7", 0], "lora_name": H3_MODEL_NAMES["turbo_lora"], "strength_model": DEFAULT_LORA_STRENGTH}},
+        "9": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}},
+        "10": {"class_type": "BasicScheduler", "inputs": {"model": ["8", 0], "scheduler": "simple", "steps": steps, "denoise": 1.0}},
+        "11": {"class_type": "BasicGuider", "inputs": {"model": ["8", 0], "conditioning": ["5", 0]}},
+        "12": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
+        "13": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["12", 0], "guider": ["11", 0], "sampler": ["9", 0], "sigmas": ["10", 0], "latent_image": ["6", 0]}},
+        "14": {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["3", 0]}},
+        "15": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["13", 0], "vae": ["4", 0]}},
+        "16": {"class_type": "CreateVideo", "inputs": {"images": ["14", 0], "audio": ["15", 0], "fps": 24, "bit_depth": 8}},
+        "17": {"class_type": "SaveVideo", "inputs": {"video": ["16", 0], "filename_prefix": "video/MiniMax_H3_T2V", "format": "mp4", "codec": "h264"}},
+    }
+
+
+# ============================================================
 # Health
 # ============================================================
 
@@ -685,6 +714,32 @@ def h3_i2v_schema():
             "error": str(exc),
             "error_type": type(exc).__name__,
         }
+
+# ============================================================
+# H3 text-to-video generation
+# ============================================================
+
+def h3_t2v_generate(job_input):
+    ensure_comfyui()
+    prompt = job_input.get("prompt")
+    if not prompt:
+        raise ValueError("Missing input.prompt.")
+    width = int(job_input.get("width", DEFAULT_WIDTH))
+    height = int(job_input.get("height", DEFAULT_HEIGHT))
+    length = int(job_input.get("length", DEFAULT_LENGTH))
+    steps = int(job_input.get("steps", DEFAULT_STEPS))
+    seed = job_input.get("seed")
+    if seed is not None:
+        seed = int(seed)
+    workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed)
+    prompt_id = queue_prompt(workflow)
+    history = wait_for_result(prompt_id)
+    results = []
+    for output in extract_outputs(history):
+        content = download_output(output["filename"], output.get("subfolder", ""), output.get("file_type", "output"))
+        results.append({"type": output["type"], "filename": output["filename"], "data": base64.b64encode(content).decode("utf-8")})
+    return {"prompt_id": prompt_id, "outputs": results}
+
 
 # ============================================================
 # H3 image-to-video generation
@@ -985,6 +1040,11 @@ def handler(event):
 
         if action == "h3_generate":
             return h3_generate(
+                input_data
+            )
+
+        if action == "h3_t2v_generate":
+            return h3_t2v_generate(
                 input_data
             )
 
