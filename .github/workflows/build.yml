@@ -33,6 +33,8 @@ jobs:
         with:
           context: .
           push: true
+          secrets: |
+            civitai_api_key=${{ secrets.CIVITAI_API_KEY }}
 
           tags: |
             ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:latest
