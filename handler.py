@@ -1052,6 +1052,383 @@ def h3_generate(job_input):
     }
 
 
+
+# ============================================================
+# H3 video extension
+# ============================================================
+
+def _probe_video(path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-count_frames",
+            "-show_entries", "stream=width,height,nb_read_frames,codec_type",
+            "-show_entries", "format=duration",
+            "-of", "json", path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    data = json.loads(result.stdout)
+    streams = data.get("streams", [])
+    video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video_stream is None:
+        raise ValueError("The uploaded file does not contain a video stream.")
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    duration = float(data.get("format", {}).get("duration", 0) or 0)
+    frames = int(video_stream.get("nb_read_frames") or round(duration * 24))
+    return {
+        "width": int(video_stream["width"]),
+        "height": int(video_stream["height"]),
+        "frames": frames,
+        "duration": duration,
+        "has_audio": audio_stream is not None,
+    }
+
+
+def _normalize_video_for_concat(source, destination, width, height):
+    info = _probe_video(source)
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "fps=24,setsar=1,format=yuv420p"
+    )
+    cmd = ["ffmpeg", "-y", "-i", source]
+    if info["has_audio"]:
+        cmd += [
+            "-map", "0:v:0", "-map", "0:a:0",
+            "-vf", video_filter,
+            "-af", "aresample=32000:async=1:first_pts=0",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", destination,
+        ]
+    else:
+        cmd += [
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-vf", video_filter,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", destination,
+        ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+
+
+def _concat_extended_video(original_path, segment_path, output_path):
+    info = _probe_video(original_path)
+    work_dir = os.path.dirname(output_path)
+    normalized_original = os.path.join(work_dir, "normalized_original.mp4")
+    normalized_segment = os.path.join(work_dir, "normalized_segment.mp4")
+    _normalize_video_for_concat(
+        original_path, normalized_original, info["width"], info["height"]
+    )
+    _normalize_video_for_concat(
+        segment_path, normalized_segment, info["width"], info["height"]
+    )
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", normalized_original,
+            "-i", normalized_segment,
+            "-filter_complex",
+            "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]",
+            "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-movflags", "+faststart", output_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    for path in (normalized_original, normalized_segment):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
+                             frame_load_cap, steps=DEFAULT_STEPS, seed=None,
+                             optional_loras=None):
+    if seed is None:
+        seed = int.from_bytes(os.urandom(8), "big") % 10_000_000_000
+
+    workflow = {
+        "1": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": video_filename,
+                "force_rate": 24,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": frame_load_cap,
+                "skip_first_frames": skip_first_frames,
+                "select_every_nth": 1,
+                "format": "AnimateDiff",
+            },
+        },
+        "2": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": H3_MODEL_NAMES["diffusion_model"], "weight_dtype": "default"},
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": H3_MODEL_NAMES["text_encoder"], "type": "minimax", "device": "default"},
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": H3_MODEL_NAMES["video_vae"]},
+        },
+        "5": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": H3_MODEL_NAMES["audio_vae"]},
+        },
+        "6": {
+            "class_type": "MiniMaxH3EncodeAVPatched",
+            "inputs": {
+                "vae": ["4", 0],
+                "images": ["1", 0],
+                "audio_vae": ["5", 0],
+                "audio": ["1", 2],
+            },
+        },
+        "7": {
+            "class_type": "MiniMaxH3VideoExtendPatched",
+            "inputs": {
+                "clip": ["3", 0],
+                "vae": ["4", 0],
+                "context_latent": ["6", 0],
+                "audio_vae": ["5", 0],
+                "prompt": prompt,
+                "length": length,
+                "context_frames": 2,
+                "pin_last_frame": True,
+            },
+        },
+        "8": {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {
+                "model": ["2", 0],
+                "shift_video": DEFAULT_SHIFT_VIDEO,
+                "shift_audio": DEFAULT_SHIFT_AUDIO,
+            },
+        },
+        "9": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["8", 0],
+                "lora_name": H3_MODEL_NAMES["turbo_lora"],
+                "strength_model": DEFAULT_LORA_STRENGTH,
+            },
+        },
+        "10": {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": "res_multistep"},
+        },
+        "11": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["9", 0],
+                "scheduler": "simple",
+                "steps": steps,
+                "denoise": 1.0,
+            },
+        },
+        "12": {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["9", 0], "conditioning": ["7", 0]},
+        },
+        "13": {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": seed},
+        },
+        "14": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["13", 0],
+                "guider": ["12", 0],
+                "sampler": ["10", 0],
+                "sigmas": ["11", 0],
+                "latent_image": ["7", 1],
+            },
+        },
+        "15": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["14", 0], "vae": ["4", 0]},
+        },
+        "16": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {"samples": ["14", 0], "vae": ["5", 0]},
+        },
+        "17": {
+            "class_type": "CreateVideo",
+            "inputs": {"images": ["15", 0], "audio": ["16", 0], "fps": 24, "bit_depth": 8},
+        },
+        "18": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["17", 0],
+                "filename_prefix": f"video/H3_Extend_{uuid.uuid4().hex}",
+                "format": "mp4",
+                "codec": "h264",
+            },
+        },
+    }
+
+    if optional_loras:
+        previous_model_node = "9"
+        next_node_id = 19
+        for lora in optional_loras:
+            node_id = str(next_node_id)
+            workflow[node_id] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [previous_model_node, 0],
+                    "lora_name": lora["lora_name"],
+                    "strength_model": lora["strength"],
+                },
+            }
+            previous_model_node = node_id
+            next_node_id += 1
+        workflow["11"]["inputs"]["model"] = [previous_model_node, 0]
+        workflow["12"]["inputs"]["model"] = [previous_model_node, 0]
+
+    return workflow
+
+
+def h3_extend_generate(job_input):
+    ensure_comfyui()
+    prompt = str(job_input.get("prompt", "")).strip()
+    if not prompt:
+        raise ValueError("Missing input.prompt.")
+
+    try:
+        extend_seconds = int(job_input.get("extend_seconds", 5))
+    except (TypeError, ValueError):
+        raise ValueError("input.extend_seconds must be 3, 5, 8, or 10.")
+    if extend_seconds not in (3, 5, 8, 10):
+        raise ValueError("input.extend_seconds must be 3, 5, 8, or 10.")
+
+    video_b64 = job_input.get("video")
+    video_url = job_input.get("video_url")
+    if not video_b64 and not video_url:
+        raise ValueError("Missing input.video (base64 MP4) or input.video_url.")
+
+    if video_url:
+        if not str(video_url).startswith(("https://", "http://")):
+            raise ValueError("input.video_url must start with http:// or https://")
+        response = requests.get(video_url, timeout=90, allow_redirects=True)
+        response.raise_for_status()
+        video_bytes = response.content
+    else:
+        if video_b64.startswith("data:"):
+            video_b64 = video_b64.split(",", 1)[1]
+        try:
+            video_bytes = base64.b64decode(video_b64, validate=True)
+        except Exception as exc:
+            raise ValueError(f"Invalid base64 video: {exc}")
+
+    if not video_bytes:
+        raise ValueError("Uploaded video is empty.")
+
+    job_id = uuid.uuid4().hex
+    input_name = f"runpod_h3_extend_{job_id}.mp4"
+    input_path = os.path.join(COMFYUI_DIR, "input", input_name)
+    temp_dir = os.path.join("/workspace", f"h3_extend_{job_id}")
+    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        with open(input_path, "wb") as video_file:
+            video_file.write(video_bytes)
+
+        info = _probe_video(input_path)
+        if info["frames"] < 5:
+            raise ValueError("The input video is too short for MiniMax H3 extension.")
+        if info["width"] % 32 != 0 or info["height"] % 32 != 0:
+            raise ValueError(
+                "The input video dimensions must be multiples of 32; "
+                f"received {info['width']}x{info['height']}."
+            )
+
+        # Encode only the trailing ~5.17 seconds; the extension node uses its
+        # final two latent frames as context, so encoding the entire history is unnecessary.
+        frame_load_cap = min(124, info["frames"])
+        skip_first_frames = max(0, info["frames"] - frame_load_cap)
+        if frame_load_cap % 17 != 5:
+            raise ValueError(
+                "The input video frame count must be H3-compatible (17n+5). "
+                f"The selected trailing context has {frame_load_cap} frames."
+            )
+
+        prompt, optional_loras, added_triggers = resolve_optional_loras(job_input, prompt)
+        log_lora_selection("EXTEND", optional_loras, added_triggers)
+        steps = int(job_input.get("steps", DEFAULT_STEPS))
+        seed = job_input.get("seed")
+        if seed is not None:
+            seed = int(seed)
+
+        workflow = build_h3_extend_workflow(
+            video_filename=input_name,
+            prompt=prompt,
+            length=max(5, round(extend_seconds * 24)) +
+                   (5 - (max(5, round(extend_seconds * 24)) % 17)) % 17,
+            skip_first_frames=skip_first_frames,
+            frame_load_cap=frame_load_cap,
+            steps=steps,
+            seed=seed,
+            optional_loras=optional_loras,
+        )
+        prompt_id = queue_prompt(workflow)
+        history = wait_for_result(prompt_id, timeout=1800)
+        output_files = extract_outputs(history)
+        segment = next((item for item in output_files if item["type"] == "videos"), None)
+        if segment is None:
+            raise RuntimeError("H3 extension completed without producing an MP4 video.")
+        segment_path = os.path.join(
+            COMFYUI_DIR, "output", segment.get("subfolder", ""), segment["filename"]
+        )
+        if not os.path.isfile(segment_path):
+            raise RuntimeError(f"Generated extension segment was not found: {segment_path}")
+
+        combined_path = os.path.join(temp_dir, "extended_video.mp4")
+        _concat_extended_video(input_path, segment_path, combined_path)
+        with open(combined_path, "rb") as result_file:
+            combined_bytes = result_file.read()
+
+        return {
+            "status": "ok",
+            "prompt_id": prompt_id,
+            "extend_seconds_requested": extend_seconds,
+            "extension_frames": workflow["7"]["inputs"]["length"],
+            "original_duration_seconds": round(info["duration"], 3),
+            "outputs": [{
+                "type": "videos",
+                "filename": f"MiniMax_H3_Extended_{job_id}.mp4",
+                "data": base64.b64encode(combined_bytes).decode("utf-8"),
+            }],
+        }
+    finally:
+        for path in (input_path,):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 # ============================================================
 # Generic workflow
 # ============================================================
@@ -1194,6 +1571,9 @@ def handler(event):
             return h3_t2v_generate(
                 input_data
             )
+
+        if action == "h3_extend_generate":
+            return h3_extend_generate(input_data)
 
         if action == "generate":
             workflow = input_data.get(
