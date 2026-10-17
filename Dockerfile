@@ -25,6 +25,14 @@ RUN git clone --depth 1 \
     https://github.com/comfyanonymous/ComfyUI.git \
     /workspace/ComfyUI
 
+# ---------------------------------------------------------
+# MiniMax H3 video extension
+# ---------------------------------------------------------
+
+RUN git clone --depth 1 \
+    https://github.com/kat3ri/ComfyUI-MiniMax-H3-Extend.git \
+    /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMax-H3-Extend
+
 WORKDIR /workspace/ComfyUI
 
 RUN python --version && \
