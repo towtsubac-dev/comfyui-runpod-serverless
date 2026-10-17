@@ -1,0 +1,36 @@
+name: Fix H3 extension SaveVideo output detection
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-extend-output.yml'
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch handler
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('handler.py')
+          text = path.read_text()
+          old = '''        output_files = extract_outputs(history)\n        segment = next((item for item in output_files if item["type"] == "videos"), None)\n        if segment is None:\n            raise RuntimeError("H3 extension completed without producing an MP4 video.")\n'''
+          new = '''        output_files = extract_outputs(history)\n        segment = next(\n            (\n                item\n                for item in output_files\n                if item.get("filename", "").lower().endswith(".mp4")\n            ),\n            None,\n        )\n        if segment is None:\n            raise RuntimeError(\n                f"H3 extension completed without producing an MP4 video. Outputs: {output_files}"\n            )\n'''
+          if old not in text:
+              raise SystemExit('target block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Commit fix and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add handler.py .github/workflows/fix-extend-output.yml
+          git commit -m 'Fix H3 extension SaveVideo output detection'
+          git push
