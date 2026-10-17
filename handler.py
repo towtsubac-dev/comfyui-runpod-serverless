@@ -437,40 +437,24 @@ def extract_outputs(record):
     result = []
 
     for node_id, node_output in outputs.items():
-        for key in (
-            "images",
-            "gifs",
-            "videos",
-        ):
-            items = node_output.get(key)
-
-            if not items:
+        if not isinstance(node_output, dict):
+            continue
+        for key, items in node_output.items():
+            if not isinstance(items, list):
                 continue
-
             for item in items:
-                filename = item.get(
-                    "filename",
-                    "",
-                )
-
-                if not filename:
+                if not isinstance(item, dict):
                     continue
-
-                result.append(
-                    {
-                        "type": key,
-                        "filename": filename,
-                        "subfolder": item.get(
-                            "subfolder",
-                            "",
-                        ),
-                        "file_type": item.get(
-                            "type",
-                            "output",
-                        ),
-                        "node_id": node_id,
-                    }
-                )
+                filename = item.get("filename")
+                if not isinstance(filename, str) or not filename:
+                    continue
+                result.append({
+                    "type": key,
+                    "filename": filename,
+                    "subfolder": item.get("subfolder", ""),
+                    "file_type": item.get("type", "output"),
+                    "node_id": node_id,
+                })
 
     return result
 
@@ -1409,6 +1393,11 @@ def h3_extend_generate(job_input):
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         output_files = extract_outputs(history)
+        print(
+            "[H3 EXTEND] SaveVideo node output:",
+            json.dumps(history.get("outputs", {}).get("18", {}), ensure_ascii=False, default=str)[:8000],
+            flush=True,
+        )
         segment = next(
             (
                 item
