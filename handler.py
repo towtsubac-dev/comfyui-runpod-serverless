@@ -1350,24 +1350,40 @@ def h3_extend_generate(job_input):
         with open(input_path, "wb") as video_file:
             video_file.write(video_bytes)
 
-        info = _probe_video(input_path)
-        if info["frames"] < 5:
+        # Normalize only the extension input: H3 requires dimensions divisible by
+        # 32. Preserve aspect ratio and pad to the nearest compatible dimensions.
+        raw_info = _probe_video(input_path)
+        if raw_info["frames"] < 5:
             raise ValueError("The input video is too short for MiniMax H3 extension.")
-        if info["width"] % 32 != 0 or info["height"] % 32 != 0:
-            raise ValueError(
-                "The input video dimensions must be multiples of 32; "
-                f"received {info['width']}x{info['height']}."
-            )
 
-        # Encode only the trailing ~5.17 seconds; the extension node uses its
-        # final two latent frames as context, so encoding the entire history is unnecessary.
+        target_width = max(32, round(raw_info["width"] / 32) * 32)
+        target_height = max(32, round(raw_info["height"] / 32) * 32)
+        normalized_path = os.path.join(temp_dir, "h3_context_normalized.mp4")
+        vf = (
+            f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+            f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1,fps=24,format=yuv420p"
+        )
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", vf,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-an", "-movflags", "+faststart", normalized_path,
+            ],
+            check=True, capture_output=True, text=True, timeout=300,
+        )
+        os.replace(normalized_path, input_path)
+        info = _probe_video(input_path)
+
+        # H3 frame counts must be 17n+5. Select the largest compatible trailing
+        # context up to 124 frames instead of rejecting otherwise usable videos.
         frame_load_cap = min(124, info["frames"])
+        frame_load_cap -= (frame_load_cap - 5) % 17
+        if frame_load_cap < 5:
+            raise ValueError("The input video is too short for MiniMax H3 extension.")
         skip_first_frames = max(0, info["frames"] - frame_load_cap)
-        if frame_load_cap % 17 != 5:
-            raise ValueError(
-                "The input video frame count must be H3-compatible (17n+5). "
-                f"The selected trailing context has {frame_load_cap} frames."
-            )
 
         prompt, optional_loras, added_triggers = resolve_optional_loras(job_input, prompt)
         log_lora_selection("EXTEND", optional_loras, added_triggers)
