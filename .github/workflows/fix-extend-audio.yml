@@ -1,0 +1,58 @@
+name: Fix H3 extension input audio
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event.head_commit.message != 'Fix H3 extension input audio handling'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch handler
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('handler.py')
+          s = p.read_text()
+          old = '''        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", vf,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-an", "-movflags", "+faststart", normalized_path,
+            ],
+            check=True, capture_output=True, text=True, timeout=300,
+        )'''
+          new = '''        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-vf", vf,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+                "-shortest", "-movflags", "+faststart", normalized_path,
+            ],
+            check=True, capture_output=True, text=True, timeout=300,
+        )'''
+          if old not in s:
+              raise SystemExit('target block not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add handler.py
+          git commit -m 'Fix H3 extension input audio handling'
+          git push
+      - name: Remove temporary workflow
+        if: false
+        run: true
