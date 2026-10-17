@@ -33,6 +33,11 @@ RUN git clone --depth 1 \
     https://github.com/kat3ri/ComfyUI-MiniMax-H3-Extend.git \
     /workspace/ComfyUI/custom_nodes/ComfyUI-MiniMax-H3-Extend
 
+# Video input decoding for H3 continuation
+RUN git clone --depth 1 \
+    https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
+    /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite
+
 WORKDIR /workspace/ComfyUI
 
 RUN python --version && \
@@ -48,6 +53,10 @@ RUN pip install --break-system-packages \
     runpod \
     requests \
     huggingface_hub
+
+RUN pip install --break-system-packages \
+    --no-cache-dir \
+    -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
 # ---------------------------------------------------------
 # SageAttention 2.2.0
