@@ -15,37 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Patch handler
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('handler.py')
-          s = p.read_text()
-          old = '''        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-                "-an", "-movflags", "+faststart", normalized_path,
-            ],
-            check=True, capture_output=True, text=True, timeout=300,
-        )'''
-          new = '''        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
-                "-shortest", "-movflags", "+faststart", normalized_path,
-            ],
-            check=True, capture_output=True, text=True, timeout=300,
-        )'''
-          if old not in s:
-              raise SystemExit('target block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
+          python -c "import base64; from pathlib import Path; p=Path('handler.py'); s=p.read_text(); old=base64.b64decode('ICAgICAgICBzdWJwcm9jZXNzLnJ1bigKICAgICAgICAgICAgWwogICAgICAgICAgICAgICAgImZmbXBlZyIsICIteSIsICItaSIsIGlucHV0X3BhdGgsCiAgICAgICAgICAgICAgICAiLXZmIiwgdmYsCiAgICAgICAgICAgICAgICAiLWM6diIsICJsaWJ4MjY0IiwgIi1wcmVzZXQiLCAidmVyeWZhc3QiLCAiLWNyZiIsICIxOCIsCiAgICAgICAgICAgICAgICAiLXBpeF9mbXQiLCAieXV2NDIwcCIsCiAgICAgICAgICAgICAgICAiLWFuIiwgIi1tb3ZmbGFncyIsICIrZmFzdHN0YXJ0Iiwgbm9ybWFsaXplZF9wYXRoLAogICAgICAgICAgICBdLAogICAgICAgICAgICBjaGVjaz1UcnVlLCBjYXB0dXJlX291dHB1dD1UcnVlLCB0ZXh0PVRydWUsIHRpbWVvdXQ9MzAwLAogICAgICAgICk=').decode(); new=base64.b64decode('ICAgICAgICBzdWJwcm9jZXNzLnJ1bigKICAgICAgICAgICAgWwogICAgICAgICAgICAgICAgImZmbXBlZyIsICIteSIsICItaSIsIGlucHV0X3BhdGgsCiAgICAgICAgICAgICAgICAiLWYiLCAibGF2ZmkiLCAiLWkiLCAiYW51bGxzcmM9Y2hhbm5lbF9sYXlvdXQ9c3RlcmVvOnNhbXBsZV9yYXRlPTMyMDAwIiwKICAgICAgICAgICAgICAgICItbWFwIiwgIjA6djowIiwgIi1tYXAiLCAiMTphOjAiLAogICAgICAgICAgICAgICAgIi12ZiIsIHZmLAogICAgICAgICAgICAgICAgIi1jOnYiLCAibGlieDI2NCIsICItcHJlc2V0IiwgInZlcnlmYXN0IiwgIi1jcmYiLCAiMTgiLAogICAgICAgICAgICAgICAgIi1waXhfZm10IiwgInl1djQyMHAiLAogICAgICAgICAgICAgICAgIi1jOmEiLCAiYWFjIiwgIi1iOmEiLCAiMTI4ayIsICItYXIiLCAiMzIwMDAiLCAiLWFjIiwgIjIiLAogICAgICAgICAgICAgICAgIi1zaG9ydGVzdCIsICItbW92ZmxhZ3MiLCAiK2Zhc3RzdGFydCIsIG5vcm1hbGl6ZWRfcGF0aCwKICAgICAgICAgICAgXSwKICAgICAgICAgICAgY2hlY2s9VHJ1ZSwgY2FwdHVyZV9vdXRwdXQ9VHJ1ZSwgdGV4dD1UcnVlLCB0aW1lb3V0PTMwMCwKICAgICAgICAp').decode(); assert old in s, 'target block not found'; p.write_text(s.replace(old,new,1))"
       - name: Commit fix
         run: |
           git config user.name 'github-actions[bot]'
@@ -53,6 +23,3 @@ jobs:
           git add handler.py
           git commit -m 'Fix H3 extension input audio handling'
           git push
-      - name: Remove temporary workflow
-        if: false
-        run: true
