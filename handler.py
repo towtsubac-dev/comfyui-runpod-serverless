@@ -1409,9 +1409,18 @@ def h3_extend_generate(job_input):
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         output_files = extract_outputs(history)
-        segment = next((item for item in output_files if item["type"] == "videos"), None)
+        segment = next(
+            (
+                item
+                for item in output_files
+                if item.get("filename", "").lower().endswith(".mp4")
+            ),
+            None,
+        )
         if segment is None:
-            raise RuntimeError("H3 extension completed without producing an MP4 video.")
+            raise RuntimeError(
+                f"H3 extension completed without producing an MP4 video. Outputs: {output_files}"
+            )
         segment_path = os.path.join(
             COMFYUI_DIR, "output", segment.get("subfolder", ""), segment["filename"]
         )
