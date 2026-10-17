@@ -1367,10 +1367,13 @@ def h3_extend_generate(job_input):
         subprocess.run(
             [
                 "ffmpeg", "-y", "-i", input_path,
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+                "-map", "0:v:0", "-map", "1:a:0",
                 "-vf", vf,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-pix_fmt", "yuv420p",
-                "-an", "-movflags", "+faststart", normalized_path,
+                "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+                "-shortest", "-movflags", "+faststart", normalized_path,
             ],
             check=True, capture_output=True, text=True, timeout=300,
         )
