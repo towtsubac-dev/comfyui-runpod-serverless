@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - compiler-off-test
   workflow_dispatch:
 
 env:
@@ -37,5 +38,5 @@ jobs:
             civitai_api_key=${{ secrets.CIVITAI_API_KEY }}
 
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:latest
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:v1
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:${{ github.ref_name == 'main' && 'latest' || 'compiler-off-test' }}
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:${{ github.ref_name == 'main' && 'v1' || 'compiler-off-test' }}
