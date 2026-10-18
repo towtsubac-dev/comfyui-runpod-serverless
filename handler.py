@@ -214,6 +214,7 @@ def start_comfyui():
             "--port",
             "8188",
             "--use-sage-attention",
+            "--disable-comfy-compiler",
         ],
         cwd=COMFYUI_DIR,
         stdout=None,
