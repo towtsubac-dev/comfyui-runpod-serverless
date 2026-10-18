@@ -173,6 +173,16 @@ RUN --mount=type=secret,id=civitai_api_key,required=true \
     test "$(stat -c%s "/workspace/ComfyUI/models/loras/MM-H3 - Pussy Lora.safetensors")" -gt 1000000
 
 # ---------------------------------------------------------
+# Image size diagnostics (test branch only; no file removal)
+# ---------------------------------------------------------
+RUN echo "=== IMAGE SIZE DIAGNOSTICS ===" && \
+    du -sh /workspace/ComfyUI/models /workspace/ComfyUI/models/.cache /workspace/ComfyUI/models/diffusion_models /workspace/ComfyUI/models/text_encoders /workspace/ComfyUI/models/vae /workspace/ComfyUI/models/loras /workspace/huggingface 2>/dev/null || true
+RUN echo "=== MODEL FILE SIZES (BYTES) ===" && \
+    find /workspace/ComfyUI/models -type f -name '*.safetensors' -printf '%s %p\n' | sort -nr
+RUN echo "=== HUGGING FACE CACHE SIZE ===" && \
+    du -sh /workspace/huggingface /workspace/ComfyUI/models/.cache /workspace/ComfyUI/models/loras/.cache 2>/dev/null || true
+
+# ---------------------------------------------------------
 # Handler
 # ---------------------------------------------------------
 
