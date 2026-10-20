@@ -162,8 +162,8 @@ def resolve_optional_loras(job_input, prompt):
             }
         ]
 
-    if not isinstance(requested, list):
-        raise ValueError("input.loras must be a list.")
+    if not isinstance(requested, list) or len(requested) > 3:
+        raise ValueError("input.loras must be a list of at most 3 LoRAs.")
 
     selected = []
     seen = set()
@@ -187,7 +187,8 @@ def resolve_optional_loras(job_input, prompt):
             if selection in seen:
                 raise ValueError("Duplicate optional LoRA selection.")
             seen.add(selection)
-            if item.get("registered", {}).get("id") != selection[8:]:
+            registered = item.get("registered")
+            if not isinstance(registered, dict) or registered.get("id") != selection[8:]:
                 raise ValueError("Registered LoRA ID mismatch.")
             filename = download_registered_lora(item)
             selected.append({"key": selection, "lora_name": filename, "strength": strength, "trigger": ""})
