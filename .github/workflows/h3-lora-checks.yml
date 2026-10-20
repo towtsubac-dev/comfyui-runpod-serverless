@@ -1,0 +1,29 @@
+name: H3 shared LoRA syntax checks
+on:
+  pull_request:
+    paths:
+      - handler.py
+      - .github/workflows/h3-lora-checks.yml
+  push:
+    branches:
+      - feature/r2-shared-lora-library
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile handler
+        run: python -m py_compile handler.py
+      - name: Check shared LoRA code paths
+        run: |
+          python - <<'PY'
+          import ast
+          with open("handler.py", encoding="utf-8") as f:
+              tree = ast.parse(f.read())
+          names = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+          assert {"download_registered_lora", "resolve_optional_loras", "h3_generate", "h3_t2v_generate", "h3_extend_generate"} <= names
+          print("H3 LoRA code paths present")
+          PY
