@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/r2-shared-lora-library
   workflow_dispatch:
 
 env:
@@ -33,9 +34,6 @@ jobs:
         with:
           context: .
           push: true
-          secrets: |
-            civitai_api_key=${{ secrets.CIVITAI_API_KEY }}
-
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:latest
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:v1
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:${{ github.ref_name == 'main' && 'latest' || 'shared-lora-test' }}
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:${{ github.ref_name == 'main' && 'v1' || 'shared-lora-test' }}
