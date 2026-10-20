@@ -1,0 +1,40 @@
+name: Build H3 Shared LoRA Test Image
+
+on:
+  push:
+    branches:
+      - feature/r2-shared-lora-library
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          secrets: |
+            civitai_api_key=${{ secrets.CIVITAI_API_KEY }}
+
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:shared-lora-test
