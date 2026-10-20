@@ -45,17 +45,8 @@ H3_MODEL_FILES = {
         "/workspace/ComfyUI/models/loras/"
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
 
-    "hmnsfw_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "HMNSFW-AIO-V2.5.safetensors",
 
-    "free_pussy_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "MM-H3 - Pussy Lora.safetensors",
 
-    "hmpenis_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "HMPenis_v2_e35.safetensors",
 }
 
 H3_MODEL_NAMES = {
@@ -70,33 +61,8 @@ H3_MODEL_NAMES = {
     "turbo_lora":
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
 
-    "hmnsfw_lora":
-        "HMNSFW-AIO-V2.5.safetensors",
-
-    "free_pussy_lora":
-        "MM-H3 - Pussy Lora.safetensors",
-
-    "hmpenis_lora":
-        "HMPenis_v2_e35.safetensors",
-}
 
 
-OPTIONAL_LORA_CONFIG = {
-    "hmnsfw": {
-        "model_key": "hmnsfw_lora",
-        "trigger": "hmmotion",
-        "strength": 0.7,
-    },
-    "free_pussy": {
-        "model_key": "free_pussy_lora",
-        "trigger": "pussy",
-        "strength": 1.0,
-    },
-    "hmpenis": {
-        "model_key": "hmpenis_lora",
-        "trigger": "HMPenis",
-        "strength": 1.0,
-    },
 }
 
 
@@ -153,14 +119,7 @@ def download_registered_lora(item):
 def resolve_optional_loras(job_input, prompt):
     requested = job_input.get("loras")
     if requested is None:
-        # Backward compatibility with requests using the former single-LoRA field.
-        selection = str(job_input.get("lora", "none")).strip().lower()
-        requested = [] if selection in ("", "none") else [
-            {
-                "name": selection,
-                "strength": OPTIONAL_LORA_CONFIG.get(selection, {}).get("strength"),
-            }
-        ]
+        requested = []
 
     if not isinstance(requested, list) or len(requested) > 3:
         raise ValueError("input.loras must be a list of at most 3 LoRAs.")
@@ -174,9 +133,8 @@ def resolve_optional_loras(job_input, prompt):
             raise ValueError("Each input.loras item must be an object.")
 
         selection = str(item.get("name", "")).strip().lower()
-        config = OPTIONAL_LORA_CONFIG.get(selection)
         is_library = selection.startswith("library:") and re.fullmatch(r"library:[a-z0-9][a-z0-9_-]{0,63}", selection)
-        if config is None and is_library:
+        if is_library:
             raw_strength = item.get("strength", 1.0)
             try:
                 strength = float(raw_strength)
@@ -193,38 +151,7 @@ def resolve_optional_loras(job_input, prompt):
             filename = download_registered_lora(item)
             selected.append({"key": selection, "lora_name": filename, "strength": strength, "trigger": ""})
             continue
-        if config is None:
-            raise ValueError(f"Unsupported optional LoRA selection: {selection}")
-
-        if selection in seen:
-            raise ValueError(f"Duplicate optional LoRA selection: {selection}")
-        seen.add(selection)
-
-        raw_strength = item.get("strength", config["strength"])
-        try:
-            strength = float(raw_strength)
-        except (TypeError, ValueError):
-            raise ValueError(f"Invalid strength for {selection}.")
-
-        if not 0.0 <= strength <= 1.5:
-            raise ValueError(f"Strength for {selection} must be between 0.0 and 1.5.")
-
-        trigger = config["trigger"]
-        trigger_added = trigger.lower() not in prompt.lower()
-        if trigger_added:
-            prompt = f"{trigger}, {prompt}"
-
-        selected.append({
-            "key": selection,
-            "lora_name": H3_MODEL_NAMES[config["model_key"]],
-            "strength": strength,
-            "trigger": trigger,
-        })
-        added_triggers.append({
-            "name": selection,
-            "trigger": trigger,
-            "added": trigger_added,
-        })
+        raise ValueError(f"Unsupported optional LoRA selection: {selection}")
 
     return prompt, selected, added_triggers
 
