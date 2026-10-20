@@ -4,6 +4,9 @@ import time
 import uuid
 import json
 import subprocess
+import hashlib
+import re
+from urllib.parse import urlparse
 
 import requests
 import runpod
@@ -42,17 +45,8 @@ H3_MODEL_FILES = {
         "/workspace/ComfyUI/models/loras/"
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
 
-    "hmnsfw_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "HMNSFW-AIO-V2.5.safetensors",
 
-    "free_pussy_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "MM-H3 - Pussy Lora.safetensors",
 
-    "hmpenis_lora":
-        "/workspace/ComfyUI/models/loras/"
-        "HMPenis_v2_e35.safetensors",
 }
 
 H3_MODEL_NAMES = {
@@ -67,50 +61,68 @@ H3_MODEL_NAMES = {
     "turbo_lora":
         "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
 
-    "hmnsfw_lora":
-        "HMNSFW-AIO-V2.5.safetensors",
 
-    "free_pussy_lora":
-        "MM-H3 - Pussy Lora.safetensors",
 
-    "hmpenis_lora":
-        "HMPenis_v2_e35.safetensors",
 }
 
 
-OPTIONAL_LORA_CONFIG = {
-    "hmnsfw": {
-        "model_key": "hmnsfw_lora",
-        "trigger": "hmmotion",
-        "strength": 0.7,
-    },
-    "free_pussy": {
-        "model_key": "free_pussy_lora",
-        "trigger": "pussy",
-        "strength": 1.0,
-    },
-    "hmpenis": {
-        "model_key": "hmpenis_lora",
-        "trigger": "HMPenis",
-        "strength": 1.0,
-    },
-}
+def download_registered_lora(item):
+    registered = item.get("registered")
+    if not isinstance(registered, dict):
+        raise ValueError("Missing registered LoRA metadata.")
+    lora_id = registered.get("id")
+    digest = registered.get("sha256")
+    size = registered.get("size")
+    url = registered.get("url")
+    if not isinstance(lora_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", lora_id):
+        raise ValueError("Invalid registered LoRA ID.")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("Invalid registered LoRA SHA256.")
+    if type(size) is not int or not 16 <= size <= 2 * 1024 ** 3:
+        raise ValueError("Invalid registered LoRA size.")
+    parsed = urlparse(url) if isinstance(url, str) else None
+    if not parsed or parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".r2.cloudflarestorage.com"):
+        raise ValueError("Invalid registered LoRA download host.")
+
+    directory = os.path.join(COMFYUI_DIR, "models", "loras")
+    os.makedirs(directory, exist_ok=True)
+    filename = "library_" + lora_id + "_" + digest[:16] + ".safetensors"
+    target = os.path.join(directory, filename)
+    if os.path.isfile(target) and os.path.getsize(target) == size:
+        with open(target, "rb") as existing:
+            if hashlib.file_digest(existing, "sha256").hexdigest() == digest:
+                return filename
+    temporary = target + "." + uuid.uuid4().hex + ".tmp"
+    try:
+        hasher = hashlib.sha256()
+        total = 0
+        with requests.get(url, stream=True, timeout=(15, 180), allow_redirects=False) as response:
+            response.raise_for_status()
+            with open(temporary, "wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > size:
+                        raise ValueError("Registered LoRA exceeds declared size.")
+                    hasher.update(chunk)
+                    output.write(chunk)
+        if total != size or hasher.hexdigest() != digest:
+            raise ValueError("Registered LoRA checksum or size mismatch.")
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return filename
 
 
 def resolve_optional_loras(job_input, prompt):
     requested = job_input.get("loras")
     if requested is None:
-        # Backward compatibility with requests using the former single-LoRA field.
-        selection = str(job_input.get("lora", "none")).strip().lower()
-        requested = [] if selection in ("", "none") else [
-            {
-                "name": selection,
-                "strength": OPTIONAL_LORA_CONFIG.get(selection, {}).get("strength"),
-            }
-        ]
+        requested = []
 
-    if not isinstance(requested, list):
-        raise ValueError("input.loras must be a list.")
+    if not isinstance(requested, list) or len(requested) > 3:
+        raise ValueError("input.loras must be a list of at most 3 LoRAs.")
 
     selected = []
     seen = set()
@@ -121,39 +133,25 @@ def resolve_optional_loras(job_input, prompt):
             raise ValueError("Each input.loras item must be an object.")
 
         selection = str(item.get("name", "")).strip().lower()
-        config = OPTIONAL_LORA_CONFIG.get(selection)
-        if config is None:
-            raise ValueError(f"Unsupported optional LoRA selection: {selection}")
-
-        if selection in seen:
-            raise ValueError(f"Duplicate optional LoRA selection: {selection}")
-        seen.add(selection)
-
-        raw_strength = item.get("strength", config["strength"])
-        try:
-            strength = float(raw_strength)
-        except (TypeError, ValueError):
-            raise ValueError(f"Invalid strength for {selection}.")
-
-        if not 0.0 <= strength <= 1.5:
-            raise ValueError(f"Strength for {selection} must be between 0.0 and 1.5.")
-
-        trigger = config["trigger"]
-        trigger_added = trigger.lower() not in prompt.lower()
-        if trigger_added:
-            prompt = f"{trigger}, {prompt}"
-
-        selected.append({
-            "key": selection,
-            "lora_name": H3_MODEL_NAMES[config["model_key"]],
-            "strength": strength,
-            "trigger": trigger,
-        })
-        added_triggers.append({
-            "name": selection,
-            "trigger": trigger,
-            "added": trigger_added,
-        })
+        is_library = selection.startswith("library:") and re.fullmatch(r"library:[a-z0-9][a-z0-9_-]{0,63}", selection)
+        if is_library:
+            raw_strength = item.get("strength", 1.0)
+            try:
+                strength = float(raw_strength)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid registered LoRA strength.")
+            if not 0.0 <= strength <= 1.5:
+                raise ValueError("Registered LoRA strength must be between 0.0 and 1.5.")
+            if selection in seen:
+                raise ValueError("Duplicate optional LoRA selection.")
+            seen.add(selection)
+            registered = item.get("registered")
+            if not isinstance(registered, dict) or registered.get("id") != selection[8:]:
+                raise ValueError("Registered LoRA ID mismatch.")
+            filename = download_registered_lora(item)
+            selected.append({"key": selection, "lora_name": filename, "strength": strength, "trigger": ""})
+            continue
+        raise ValueError(f"Unsupported optional LoRA selection: {selection}")
 
     return prompt, selected, added_triggers
 

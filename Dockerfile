@@ -144,33 +144,7 @@ hf_hub_download( \
     repo_id='lightx2v/Minimax-h3-Turbo', \
     filename='minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', \
     local_dir='/workspace/ComfyUI/models/loras' \
-)" \
-&& python -c "\
-from huggingface_hub import hf_hub_download; \
-hf_hub_download( \
-    repo_id='Hearmeman/minimax-h3-loras', \
-    filename='HMNSFW-AIO-V2.5.safetensors', \
-    local_dir='/workspace/ComfyUI/models/loras' \
-); \
-hf_hub_download( \
-    repo_id='Hearmeman/minimax-h3-loras', \
-    filename='HMPenis_v2_e35.safetensors', \
-    local_dir='/workspace/ComfyUI/models/loras' \
 )"
-
-# ---------------------------------------------------------
-# Free Pussy LoRA (Civitai version 3321019)
-# API key is mounted as a BuildKit secret and is not stored in the image.
-# ---------------------------------------------------------
-
-RUN --mount=type=secret,id=civitai_api_key,required=true \
-    CIVITAI_API_KEY="$(cat /run/secrets/civitai_api_key)" && \
-    test -n "$CIVITAI_API_KEY" && \
-    curl -fL --retry 3 \
-      -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
-      "https://civitai.com/api/download/models/3321019" \
-      -o "/workspace/ComfyUI/models/loras/MM-H3 - Pussy Lora.safetensors" && \
-    test "$(stat -c%s "/workspace/ComfyUI/models/loras/MM-H3 - Pussy Lora.safetensors")" -gt 1000000
 
 # ---------------------------------------------------------
 # Handler
