@@ -211,7 +211,7 @@ def start_comfyui():
             "127.0.0.1",
             "--port",
             "8188",
-            "--use-sage-attention",
+            *(["--use-sage-attention"] if os.environ.get("H3_USE_SAGE", "1") == "1" else []),
         ],
         cwd=COMFYUI_DIR,
         stdout=None,
