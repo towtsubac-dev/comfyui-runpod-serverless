@@ -67,9 +67,10 @@ RUN pip install --break-system-packages \
 # RTX 4090 / SM89
 # ---------------------------------------------------------
 
-RUN pip install --break-system-packages \
-    --no-cache-dir \
+RUN pip install --break-system-packages --no-cache-dir --no-deps --target /opt/sage/sm89 \
     https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
+RUN pip install --break-system-packages --no-cache-dir --no-deps --target /opt/sage/sm120 \
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-120-cp312-cp312-linux_x86_64.whl
 
 # ---------------------------------------------------------
 # MiniMax H3 directories
@@ -158,4 +159,5 @@ COPY handler.py /workspace/handler.py
 # Start
 # ---------------------------------------------------------
 
-CMD ["python", "/workspace/handler.py"]
+COPY sage_launcher.py /workspace/sage_launcher.py
+CMD ["python", "/workspace/sage_launcher.py"]
