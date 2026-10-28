@@ -86,7 +86,7 @@ RUN mkdir -p \
 # MiniMax H3 diffusion model
 # ---------------------------------------------------------
 
-RUN python -c "\
+RUN --mount=type=secret,id=hf_token,required=true test -s /run/secrets/hf_token && HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
@@ -99,7 +99,7 @@ hf_hub_download( \
 # MiniMax H3 text encoder
 # ---------------------------------------------------------
 
-RUN python -c "\
+RUN --mount=type=secret,id=hf_token,required=true test -s /run/secrets/hf_token && HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
@@ -112,7 +112,7 @@ hf_hub_download( \
 # MiniMax H3 Video VAE
 # ---------------------------------------------------------
 
-RUN python -c "\
+RUN --mount=type=secret,id=hf_token,required=true test -s /run/secrets/hf_token && HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
@@ -125,7 +125,7 @@ hf_hub_download( \
 # MiniMax H3 Audio VAE
 # ---------------------------------------------------------
 
-RUN python -c "\
+RUN --mount=type=secret,id=hf_token,required=true test -s /run/secrets/hf_token && HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='Comfy-Org/MiniMax-H3', \
@@ -139,7 +139,7 @@ hf_hub_download( \
 # 8-step generation
 # ---------------------------------------------------------
 
-RUN python -c "\
+RUN --mount=type=secret,id=hf_token,required=true test -s /run/secrets/hf_token && HF_TOKEN="$(cat /run/secrets/hf_token)" python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
     repo_id='lightx2v/Minimax-h3-Turbo', \
