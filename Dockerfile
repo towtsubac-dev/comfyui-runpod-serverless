@@ -67,9 +67,12 @@ RUN pip install --break-system-packages \
 # RTX 4090 / SM89
 # ---------------------------------------------------------
 
-RUN pip install --break-system-packages \
-    --no-cache-dir \
-    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
+RUN pip install --break-system-packages --no-deps --target /opt/sage/sm89 \
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl \
+    && pip install --break-system-packages --no-deps --target /opt/sage/sm120 \
+    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-120-cp312-cp312-linux_x86_64.whl \
+    && PYTHONPATH=/opt/sage/sm89 python -c "import sageattention; print('SM89 SageAttention import OK')" \
+    && PYTHONPATH=/opt/sage/sm120 python -c "import sageattention; print('SM120 SageAttention import OK')"
 
 # ---------------------------------------------------------
 # MiniMax H3 directories
@@ -153,9 +156,10 @@ hf_hub_download( \
 WORKDIR /workspace
 
 COPY handler.py /workspace/handler.py
+COPY sage_start.py /workspace/sage_start.py
 
 # ---------------------------------------------------------
 # Start
 # ---------------------------------------------------------
 
-CMD ["python", "/workspace/handler.py"]
+CMD ["python", "/workspace/sage_start.py"]
