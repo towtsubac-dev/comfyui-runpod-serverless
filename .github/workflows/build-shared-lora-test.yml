@@ -1,9 +1,9 @@
-name: Build H3 Shared LoRA Test Image
+name: Build H3 Five LoRA Sage Test Image
 
 on:
   push:
     branches:
-      - feature/r2-shared-lora-library
+      - feature/h3-five-loras-sage-sm120
   workflow_dispatch:
 
 env:
@@ -34,4 +34,4 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:shared-lora-test
+            ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:five-loras-sage-test
