@@ -1,4 +1,16 @@
 # syntax=docker/dockerfile:1
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS cuda_toolkit
+FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime AS sage_builder
+COPY --from=cuda_toolkit /usr/local/cuda-13.0 /usr/local/cuda-13.0
+ENV CUDA_HOME=/usr/local/cuda-13.0
+ENV PATH=/usr/local/cuda-13.0/bin:$PATH
+ENV TORCH_CUDA_ARCH_LIST="8.9;12.0"
+ENV MAX_JOBS=2
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ ninja-build libgomp1 && rm -rf /var/lib/apt/lists/*
+RUN pip install --break-system-packages --no-cache-dir packaging ninja setuptools wheel
+RUN git clone --depth 1 --branch v2.2.0 https://github.com/thu-ml/SageAttention.git /tmp/SageAttention
+RUN cd /tmp/SageAttention && pip wheel --no-build-isolation --no-deps -w /tmp/sage-wheels .
+
 FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1
@@ -59,18 +71,13 @@ RUN pip install --break-system-packages \
     -r /workspace/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt
 
 # ---------------------------------------------------------
-# SageAttention 2.2.0
-#
-# PyTorch 2.12.0
-# CUDA 13.0
-# Python 3.12
-# RTX 4090 / SM89
+# SageAttention 2.2.0, built for SM89 and SM120
 # ---------------------------------------------------------
+COPY --from=sage_builder /tmp/sage-wheels/ /tmp/sage-wheels/
+RUN pip install --break-system-packages --no-deps /tmp/sage-wheels/sageattention*.whl && rm -rf /tmp/sage-wheels
+RUN python -c "import sageattention, torch; print('SageAttention import OK; torch=', torch.__version__)"
 
-RUN pip install --break-system-packages \
-    --no-cache-dir \
-    https://github.com/tcpassos/sage-wheels-linux/releases/download/sage-2.2.0-torch-2.12.0-cu130-py312/sageattention-2.2.0-89-cp312-cp312-linux_x86_64.whl
-
+# ---------------------------------------------------------
 # ---------------------------------------------------------
 # MiniMax H3 directories
 # ---------------------------------------------------------
