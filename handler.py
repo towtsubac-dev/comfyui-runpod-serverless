@@ -121,8 +121,8 @@ def resolve_optional_loras(job_input, prompt):
     if requested is None:
         requested = []
 
-    if not isinstance(requested, list) or len(requested) > 3:
-        raise ValueError("input.loras must be a list of at most 3 LoRAs.")
+    if not isinstance(requested, list) or len(requested) > 5:
+        raise ValueError("input.loras must be a list of at most 5 LoRAs.")
 
     selected = []
     seen = set()
