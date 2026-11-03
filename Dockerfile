@@ -165,6 +165,9 @@ RUN git clone --depth 1 https://github.com/veda-sparse/Veda-on-ComfyUI.git \
 # upgrading a Torch-coupled dependency. Fail early if it is missing.
 RUN python -c "import torch, triton; print('Veda runtime:', 'torch', torch.__version__, 'triton', triton.__version__)"
 RUN python -m compileall -q /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI/veda_comfy
+# Diagnostic build: keep Veda files but prevent ComfyUI from importing the node.
+# Move outside custom_nodes; restore only after startup is verified.
+RUN mv /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI /workspace/Veda-on-ComfyUI-disabled
 RUN mkdir -p /workspace/ComfyUI/models/veda
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
