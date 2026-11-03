@@ -790,6 +790,40 @@ def health_check():
 
 
 # ============================================================
+# Veda registration diagnostic (no model loading or generation)
+# ============================================================
+
+def veda_check():
+    response = comfy_get("/object_info")
+    object_info = response.json()
+    matching_nodes = {
+        name: {
+            "display_name": data.get("display_name"),
+            "category": data.get("category"),
+            "input": data.get("input", {}),
+            "output": data.get("output", []),
+        }
+        for name, data in object_info.items()
+        if "veda" in name.lower()
+        or "veda" in str(data.get("display_name", "")).lower()
+    }
+    predictor_path = os.path.join(COMFYUI_DIR, "models", "veda", VEDA_PREDICTOR)
+    return {
+        "status": "ok" if "VedaSparseAttention" in object_info
+                  and os.path.isfile(predictor_path) else "error",
+        "expected_node": "VedaSparseAttention",
+        "expected_node_registered": "VedaSparseAttention" in object_info,
+        "veda_nodes": matching_nodes,
+        "predictor": {
+            "filename": VEDA_PREDICTOR,
+            "exists": os.path.isfile(predictor_path),
+            "size_bytes": os.path.getsize(predictor_path)
+                          if os.path.isfile(predictor_path) else 0,
+        },
+    }
+
+
+# ============================================================
 # H3 check
 # ============================================================
 
@@ -1617,6 +1651,9 @@ def handler(event):
 
         if action == "h3_check":
             return h3_check()
+
+        if action == "veda_check":
+            return veda_check()
 
         if action == "h3_generate":
             return h3_generate(
