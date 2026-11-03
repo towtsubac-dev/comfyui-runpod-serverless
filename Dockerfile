@@ -161,14 +161,17 @@ RUN git clone --depth 1 https://github.com/veda-sparse/Veda-on-ComfyUI.git \
     /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI
 # The upstream node supports clone-and-restart; editable pip install fails
 # because setuptools discovers multiple top-level asset directories.
-# Install the Linux runtime dependency without packaging the node itself.
-RUN pip install --break-system-packages --no-cache-dir 'triton>=3.0'
+# PyTorch already supplies Triton on Linux; verify its import without
+# upgrading a Torch-coupled dependency. Fail early if it is missing.
+RUN python -c "import torch, triton; print('Veda runtime:', 'torch', torch.__version__, 'triton', triton.__version__)"
+RUN python -m compileall -q /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI/veda_comfy
 RUN mkdir -p /workspace/ComfyUI/models/veda
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 hf_hub_download( \
 repo_id='Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview', \
 filename='minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors', \
+revision='9a1fd3a41b4a754a7886e64e82edbddf599fd1bd', \
 local_dir='/workspace/ComfyUI/models/veda' \
 )"
 
