@@ -190,4 +190,6 @@ COPY handler.py /workspace/handler.py
 # Start
 # ---------------------------------------------------------
 
-CMD ["python", "/workspace/handler.py"]
+# Diagnostic-only startup wrapper: log before Python starts.
+# No secrets or environment variable values are printed.
+CMD ["sh", "-c", "echo '[H3 Veda startup] shell entered'; df -h / /workspace; ls -ld /workspace /workspace/ComfyUI /workspace/handler.py /workspace/Veda-on-ComfyUI-disabled /workspace/ComfyUI/models/veda; echo '[H3 Veda startup] exec python handler'; exec python -u /workspace/handler.py"]
