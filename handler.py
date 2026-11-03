@@ -765,6 +765,10 @@ def apply_h3_attention(workflow, mode):
         "inputs": {
             "model": last_model,
             "predictor": VEDA_PREDICTOR,
+            "generated_sparsity": "32",
+            "reference_sparsity": "32",
+            "full_attention_layers": "",
+            "full_attention_steps": "",
             "verbose": True,
         },
     }
