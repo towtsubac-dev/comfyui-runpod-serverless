@@ -154,6 +154,23 @@ hf_hub_download( \
 )"
 
 # ---------------------------------------------------------
+# Veda Sparse Attention (isolated test branch)
+# Predictor is baked into the image; no worker-time download.
+# ---------------------------------------------------------
+RUN git clone --depth 1 https://github.com/veda-sparse/Veda-on-ComfyUI.git \
+    /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI
+RUN pip install --break-system-packages --no-cache-dir \
+    -e /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI
+RUN mkdir -p /workspace/ComfyUI/models/veda
+RUN python -c "\
+from huggingface_hub import hf_hub_download; \
+hf_hub_download( \
+repo_id='Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview', \
+filename='minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors', \
+local_dir='/workspace/ComfyUI/models/veda' \
+)"
+
+# ---------------------------------------------------------
 # Handler
 # ---------------------------------------------------------
 
