@@ -159,8 +159,10 @@ hf_hub_download( \
 # ---------------------------------------------------------
 RUN git clone --depth 1 https://github.com/veda-sparse/Veda-on-ComfyUI.git \
     /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI
-RUN pip install --break-system-packages --no-cache-dir \
-    -e /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI
+# The upstream node supports clone-and-restart; editable pip install fails
+# because setuptools discovers multiple top-level asset directories.
+# Install the Linux runtime dependency without packaging the node itself.
+RUN pip install --break-system-packages --no-cache-dir 'triton>=3.0'
 RUN mkdir -p /workspace/ComfyUI/models/veda
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
