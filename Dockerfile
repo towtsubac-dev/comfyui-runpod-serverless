@@ -187,6 +187,10 @@ COPY handler.py /workspace/handler.py
 # Fail the image build if the handler has a Python syntax error.
 RUN python -m py_compile /workspace/handler.py
 
+# GPU-free regression tests must pass before publishing the image.
+COPY tests/test_veda_workflow.py /workspace/tests/test_veda_workflow.py
+RUN python -m unittest discover -s /workspace/tests -p 'test_veda_workflow.py' -v
+
 # ---------------------------------------------------------
 # Start
 # ---------------------------------------------------------
