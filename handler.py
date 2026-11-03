@@ -1429,7 +1429,7 @@ def h3_extend_generate(job_input):
             optional_loras=optional_loras,
         )
         workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
-    prompt_id = queue_prompt(workflow)
+        prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         output_files = extract_outputs(history)
         print(
