@@ -743,11 +743,29 @@ def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, le
 VEDA_PREDICTOR = "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
 
 
-def apply_h3_attention(workflow, mode):
+def validate_veda_sparsity(value, name):
+    """Accept trained preset, a tile count, or a skip percentage."""
+    if not isinstance(value, str):
+        raise ValueError(f"input.{name} must be a string.")
+    value = value.strip().lower()
+    if value == "trained":
+        return value
+    if value.endswith("%"):
+        number = value[:-1]
+        if number.isdigit() and 1 <= int(number) <= 99:
+            return f"{int(number)}%"
+    elif value.isdigit() and 1 <= int(value) <= 256:
+        return str(int(value))
+    raise ValueError(f"input.{name} must be 'trained', 1-256, or 1%-99%.")
+
+
+def apply_h3_attention(workflow, mode, generated_sparsity="trained", reference_sparsity="trained"):
     if mode not in ("sage", "veda"):
         raise ValueError("input.attention must be 'sage' or 'veda'.")
     if mode == "sage":
         return workflow
+    generated_sparsity = validate_veda_sparsity(generated_sparsity, "veda_generated_sparsity")
+    reference_sparsity = validate_veda_sparsity(reference_sparsity, "veda_reference_sparsity")
     guider_nodes = [node for node in workflow.values()
                     if node.get("class_type") == "BasicGuider"]
     scheduler_nodes = [node for node in workflow.values()
@@ -765,8 +783,8 @@ def apply_h3_attention(workflow, mode):
         "inputs": {
             "model": last_model,
             "predictor": VEDA_PREDICTOR,
-            "generated_sparsity": "32",
-            "reference_sparsity": "32",
+            "generated_sparsity": generated_sparsity,
+            "reference_sparsity": reference_sparsity,
             "full_attention_layers": "",
             "full_attention_steps": "",
             "verbose": True,
@@ -955,7 +973,12 @@ def h3_t2v_generate(job_input):
     if seed is not None and not 0 <= seed < 2**64:
         raise ValueError("input.seed must be an unsigned 64-bit integer.")
     workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
-    workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
+    workflow = apply_h3_attention(
+        workflow,
+        job_input.get("attention", "sage"),
+        job_input.get("veda_generated_sparsity", "trained"),
+        job_input.get("veda_reference_sparsity", "trained"),
+    )
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
     results = []
@@ -1090,7 +1113,12 @@ def h3_generate(job_input):
         optional_loras=optional_loras,
     )
 
-    workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
+    workflow = apply_h3_attention(
+        workflow,
+        job_input.get("attention", "sage"),
+        job_input.get("veda_generated_sparsity", "trained"),
+        job_input.get("veda_reference_sparsity", "trained"),
+    )
     prompt_id = queue_prompt(workflow)
 
     history = wait_for_result(
@@ -1485,7 +1513,12 @@ def h3_extend_generate(job_input):
             seed=seed,
             optional_loras=optional_loras,
         )
-        workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
+        workflow = apply_h3_attention(
+            workflow,
+            job_input.get("attention", "sage"),
+            job_input.get("veda_generated_sparsity", "trained"),
+            job_input.get("veda_reference_sparsity", "trained"),
+        )
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         output_files = extract_outputs(history)
