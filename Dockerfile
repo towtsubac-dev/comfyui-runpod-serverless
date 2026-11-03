@@ -186,6 +186,9 @@ WORKDIR /workspace
 
 COPY handler.py /workspace/handler.py
 
+# Fail the image build if the handler has a Python syntax error.
+RUN python -m py_compile /workspace/handler.py
+
 # ---------------------------------------------------------
 # Start
 # ---------------------------------------------------------
