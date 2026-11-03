@@ -165,9 +165,7 @@ RUN git clone --depth 1 https://github.com/veda-sparse/Veda-on-ComfyUI.git \
 # upgrading a Torch-coupled dependency. Fail early if it is missing.
 RUN python -c "import torch, triton; print('Veda runtime:', 'torch', torch.__version__, 'triton', triton.__version__)"
 RUN python -m compileall -q /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI/veda_comfy
-# Diagnostic build: keep Veda files but prevent ComfyUI from importing the node.
-# Move outside custom_nodes; restore only after startup is verified.
-RUN mv /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI /workspace/Veda-on-ComfyUI-disabled
+# Veda custom node enabled in isolated test image.
 RUN mkdir -p /workspace/ComfyUI/models/veda
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
@@ -195,4 +193,4 @@ RUN python -m py_compile /workspace/handler.py
 
 # Diagnostic-only startup wrapper: log before Python starts.
 # No secrets or environment variable values are printed.
-CMD ["sh", "-c", "echo '[H3 Veda startup] shell entered'; df -h / /workspace; ls -ld /workspace /workspace/ComfyUI /workspace/handler.py /workspace/Veda-on-ComfyUI-disabled /workspace/ComfyUI/models/veda; echo '[H3 Veda startup] exec python handler'; exec python -u /workspace/handler.py"]
+CMD ["sh", "-c", "echo '[H3 Veda startup] shell entered'; df -h / /workspace; ls -ld /workspace /workspace/ComfyUI /workspace/handler.py /workspace/ComfyUI/custom_nodes/Veda-on-ComfyUI /workspace/ComfyUI/models/veda; echo '[H3 Veda startup] exec python handler'; exec python -u /workspace/handler.py"]
