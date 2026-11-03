@@ -737,6 +737,44 @@ def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, le
 
 
 # ============================================================
+# Veda opt-in: leave Sage as the default for all existing clients.
+# ============================================================
+
+VEDA_PREDICTOR = "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
+
+
+def apply_h3_attention(workflow, mode):
+    if mode not in ("sage", "veda"):
+        raise ValueError("input.attention must be 'sage' or 'veda'.")
+    if mode == "sage":
+        return workflow
+    guider_nodes = [node for node in workflow.values()
+                    if node.get("class_type") == "BasicGuider"]
+    scheduler_nodes = [node for node in workflow.values()
+                       if node.get("class_type") == "BasicScheduler"]
+    if len(guider_nodes) != 1 or len(scheduler_nodes) != 1:
+        raise RuntimeError("Unexpected H3 sampler graph for Veda.")
+    guider = guider_nodes[0]
+    scheduler = scheduler_nodes[0]
+    if guider["inputs"]["model"] != scheduler["inputs"]["model"]:
+        raise RuntimeError("H3 model paths differ; cannot attach Veda safely.")
+    last_model = guider["inputs"]["model"]
+    node_id = str(max(int(k) for k in workflow) + 1)
+    workflow[node_id] = {
+        "class_type": "VedaSparseAttention",
+        "inputs": {
+            "model": last_model,
+            "predictor": VEDA_PREDICTOR,
+            "verbose": True,
+        },
+    }
+    guider["inputs"]["model"] = [node_id, 0]
+    scheduler["inputs"]["model"] = [node_id, 0]
+    print(f"[H3 Attention] mode=veda node={node_id} predictor={VEDA_PREDICTOR}", flush=True)
+    return workflow
+
+
+# ============================================================
 # Health
 # ============================================================
 
@@ -860,6 +898,7 @@ def h3_t2v_generate(job_input):
     if seed is not None:
         seed = int(seed)
     workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
+    workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
     results = []
@@ -994,6 +1033,7 @@ def h3_generate(job_input):
         optional_loras=optional_loras,
     )
 
+    workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
     prompt_id = queue_prompt(workflow)
 
     history = wait_for_result(
@@ -1388,7 +1428,8 @@ def h3_extend_generate(job_input):
             seed=seed,
             optional_loras=optional_loras,
         )
-        prompt_id = queue_prompt(workflow)
+        workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
+    prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         output_files = extract_outputs(history)
         print(
