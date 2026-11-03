@@ -6,9 +6,9 @@ import unittest
 
 SOURCE = Path("/workspace/handler.py")
 tree = ast.parse(SOURCE.read_text())
-node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "apply_h3_attention")
+nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("apply_h3_attention", "validate_veda_sparsity")]
 namespace = {"VEDA_PREDICTOR": "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"}
-exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), namespace)
+exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)
 patch = namespace["apply_h3_attention"]
 
 
@@ -33,12 +33,22 @@ class VedaWorkflowTests(unittest.TestCase):
         self.assertEqual(veda["inputs"], {
             "model": ["1", 0],
             "predictor": namespace["VEDA_PREDICTOR"],
-            "generated_sparsity": "32",
-            "reference_sparsity": "32",
+            "generated_sparsity": "trained",
+            "reference_sparsity": "trained",
             "full_attention_layers": "",
             "full_attention_steps": "",
             "verbose": True,
         })
+
+    def test_custom_sparsity(self):
+        result = patch(self.workflow, "veda", "90%", "24")
+        self.assertEqual(result["12"]["inputs"]["generated_sparsity"], "90%")
+        self.assertEqual(result["12"]["inputs"]["reference_sparsity"], "24")
+
+    def test_invalid_sparsity_fails(self):
+        for value in ("0", "257", "100%", "-1", "invalid", 32):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                patch(copy.deepcopy(self.workflow), "veda", value, "trained")
 
     def test_mismatched_model_paths_fail(self):
         self.workflow["11"]["inputs"]["model"] = ["9", 0]
