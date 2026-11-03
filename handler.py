@@ -772,6 +772,11 @@ def apply_h3_attention(workflow, mode):
             "verbose": True,
         },
     }
+    required_inputs = ("model", "predictor", "generated_sparsity",
+                       "reference_sparsity", "full_attention_layers",
+                       "full_attention_steps", "verbose")
+    if any(key not in workflow[node_id]["inputs"] for key in required_inputs):
+        raise RuntimeError("Veda workflow is missing required node inputs.")
     guider["inputs"]["model"] = [node_id, 0]
     scheduler["inputs"]["model"] = [node_id, 0]
     print(f"[H3 Attention] mode=veda node={node_id} predictor={VEDA_PREDICTOR}", flush=True)
@@ -935,6 +940,20 @@ def h3_t2v_generate(job_input):
     seed = job_input.get("seed")
     if seed is not None:
         seed = int(seed)
+    if not (isinstance(prompt, str) and 0 < len(prompt) <= 10000):
+        raise ValueError("input.prompt must be 1-10000 characters.")
+    if width < 256 or width > 1536 or width % 32 != 0:
+        raise ValueError("input.width must be 256-1536 and divisible by 32.")
+    if height < 256 or height > 1536 or height % 32 != 0:
+        raise ValueError("input.height must be 256-1536 and divisible by 32.")
+    if width * height > 864 * 480:
+        raise ValueError("T2V test resolution must not exceed 864x480 pixels.")
+    if length < 22 or length > 124 or (length - 5) % 17 != 0:
+        raise ValueError("input.length must be 17n+5, from 22 to 124.")
+    if steps < 1 or steps > 16:
+        raise ValueError("input.steps must be between 1 and 16.")
+    if seed is not None and not 0 <= seed < 2**64:
+        raise ValueError("input.seed must be an unsigned 64-bit integer.")
     workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
     workflow = apply_h3_attention(workflow, job_input.get("attention", "sage"))
     prompt_id = queue_prompt(workflow)
