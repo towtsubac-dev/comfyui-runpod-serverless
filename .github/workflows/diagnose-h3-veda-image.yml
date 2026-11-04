@@ -44,7 +44,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Layer | Compressed GiB | Digest |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---:|---:|---|" >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.layers | to_entries[] | "| " + ((.key+1)|tostring) + " | " + ((.value.size / 1073741824 * 100 | round / 100)|tostring) + " | \`" + (.value.digest[0:24]) + "...\` |"' /tmp/manifest.json >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.layers | to_entries[] | "| " + ((.key+1)|tostring) + " | " + ((.value.size / 1073741824 * 100 | round / 100)|tostring) + " | " + (.value.digest[0:24]) + "... |"' /tmp/manifest.json >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Note:** Manifest sizes are compressed transfer sizes, not extracted filesystem sizes. Mapping layers to Dockerfile commands requires config/history inspection; no full image was downloaded." >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
