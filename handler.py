@@ -950,6 +950,17 @@ def validate_h3_t2v_resolution(width, height, attention):
 # H3 text-to-video generation
 # ============================================================
 
+def _normalize_h3_generation_length(length):
+    """Map a requested frame count to the nearest supported H3 frame count."""
+    if length < 22 or length > 124:
+        raise ValueError("input.length must be between 22 and 124 frames.")
+    allowed = (22, 39, 56, 73, 90, 107, 124)
+    normalized = min(allowed, key=lambda candidate: (abs(candidate - length), candidate))
+    if normalized != length:
+        print(f"[H3] adjusted length from {length} to {normalized} frames", flush=True)
+    return normalized
+
+
 def h3_t2v_generate(job_input):
     ensure_comfyui()
     prompt = job_input.get("prompt")
@@ -971,8 +982,7 @@ def h3_t2v_generate(job_input):
     if height < 256 or height > 1536 or height % 32 != 0:
         raise ValueError("input.height must be 256-1536 and divisible by 32.")
     validate_h3_t2v_resolution(width, height, job_input.get("attention", "veda"))
-    if length < 22 or length > 124 or (length - 5) % 17 != 0:
-        raise ValueError("input.length must be 17n+5, from 22 to 124.")
+    length = _normalize_h3_generation_length(length)
     if steps < 1 or steps > 16:
         raise ValueError("input.steps must be between 1 and 16.")
     if seed is not None and not 0 <= seed < 2**64:
@@ -1106,6 +1116,8 @@ def h3_generate(job_input):
         image_bytes,
         filename,
     )
+
+    length = _normalize_h3_generation_length(length)
 
     workflow = build_h3_i2v_workflow(
         image_filename=uploaded_filename,
