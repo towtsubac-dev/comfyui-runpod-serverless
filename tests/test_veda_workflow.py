@@ -20,9 +20,9 @@ class VedaWorkflowTests(unittest.TestCase):
             "11": {"class_type": "BasicGuider", "inputs": {"model": ["1", 0]}},
         }
 
-    def test_sage_is_unchanged(self):
-        before = copy.deepcopy(self.workflow)
-        self.assertEqual(patch(self.workflow, "sage"), before)
+    def test_sage_is_rejected(self):
+        with self.assertRaises(ValueError):
+            patch(self.workflow, "sage")
 
     def test_veda_has_every_required_input(self):
         result = patch(self.workflow, "veda")
