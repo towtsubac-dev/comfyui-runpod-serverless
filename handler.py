@@ -1513,11 +1513,20 @@ def h3_extend_generate(job_input):
         if seed is not None:
             seed = int(seed)
 
+        requested_frames = max(5, round(extend_seconds * 24))
+        extension_length = requested_frames + (5 - requested_frames % 17) % 17
+        if extension_length > 124:
+            raise ValueError(
+                f"Requested extension of {extend_seconds}s requires {extension_length} frames, "
+                "but MiniMax H3 supports at most 124 frames (about 5 seconds) "
+                "per generation. Use 3 or 5 seconds; longer extensions require "
+                "multiple consecutive generation passes."
+            )
+
         workflow = build_h3_extend_workflow(
             video_filename=input_name,
             prompt=prompt,
-            length=max(5, round(extend_seconds * 24)) +
-                   (5 - (max(5, round(extend_seconds * 24)) % 17)) % 17,
+            length=extension_length,
             skip_first_frames=skip_first_frames,
             frame_load_cap=frame_load_cap,
             steps=steps,
