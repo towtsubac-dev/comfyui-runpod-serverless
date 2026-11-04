@@ -940,6 +940,15 @@ def h3_check():
 # ============================================================
 
 
+def validate_h3_t2v_resolution(width, height, attention):
+    """Permit only the Veda 1024x512 tile-alignment experiment above baseline."""
+    if width * height <= 864 * 480:
+        return
+    if attention == "veda" and width == 1024 and height == 512:
+        return
+    raise ValueError("T2V test resolution exceeds baseline; only Veda 1024x512 is additionally permitted.")
+
+
 # ============================================================
 # H3 text-to-video generation
 # ============================================================
@@ -964,8 +973,7 @@ def h3_t2v_generate(job_input):
         raise ValueError("input.width must be 256-1536 and divisible by 32.")
     if height < 256 or height > 1536 or height % 32 != 0:
         raise ValueError("input.height must be 256-1536 and divisible by 32.")
-    if width * height > 864 * 480:
-        raise ValueError("T2V test resolution must not exceed 864x480 pixels.")
+    validate_h3_t2v_resolution(width, height, job_input.get("attention", "sage"))
     if length < 22 or length > 124 or (length - 5) % 17 != 0:
         raise ValueError("input.length must be 17n+5, from 22 to 124.")
     if steps < 1 or steps > 16:
