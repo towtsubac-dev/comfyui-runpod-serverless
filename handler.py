@@ -1465,6 +1465,12 @@ def h3_extend_generate(job_input):
         # Normalize only the extension input: H3 requires dimensions divisible by
         # 32. Preserve aspect ratio and pad to the nearest compatible dimensions.
         raw_info = _probe_video(input_path)
+        original_for_concat = os.path.join(temp_dir, "original_for_concat.mp4")
+        # Keep the uploaded original intact for final A/V concatenation.
+        # The H3 context normalization below deliberately uses silent audio.
+        with open(original_for_concat, "wb") as original_file:
+            original_file.write(video_bytes)
+        print(f"[H3 EXTEND] original media: {raw_info}", flush=True)
         if raw_info["frames"] < 5:
             raise ValueError("The input video is too short for MiniMax H3 extension.")
 
@@ -1551,7 +1557,9 @@ def h3_extend_generate(job_input):
             raise RuntimeError(f"Generated extension segment was not found: {segment_path}")
 
         combined_path = os.path.join(temp_dir, "extended_video.mp4")
-        _concat_extended_video(input_path, segment_path, combined_path)
+        print(f"[H3 EXTEND] generated segment media: {_probe_video(segment_path)}", flush=True)
+        _concat_extended_video(original_for_concat, segment_path, combined_path)
+        print(f"[H3 EXTEND] combined media: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
             combined_bytes = result_file.read()
 
