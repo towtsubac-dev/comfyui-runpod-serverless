@@ -1,0 +1,50 @@
+name: Diagnose H3 Veda Image Size
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect remote image manifest without downloading layers
+        env:
+          IMAGE: ghcr.io/towtsubac-dev/comfyui-runpod-serverless:h3-veda-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "$IMAGE" > /tmp/index.json
+          MEDIA_TYPE=$(jq -r '.mediaType // ""' /tmp/index.json)
+          if jq -e '.manifests' /tmp/index.json >/dev/null; then
+            DIGEST=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty' /tmp/index.json)
+            if [ -z "$DIGEST" ]; then echo "No linux/amd64 image found"; exit 1; fi
+            docker buildx imagetools inspect --raw "${IMAGE%:*}@$DIGEST" > /tmp/manifest.json
+          else
+            cp /tmp/index.json /tmp/manifest.json
+          fi
+          jq -e '.layers and .config' /tmp/manifest.json >/dev/null
+          echo "### H3 Veda image (remote manifest)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"Compressed layer bytes: " + ([.layers[].size] | add | tostring)' /tmp/manifest.json
+          jq -r '"Compressed layer GiB: " + (([.layers[].size] | add / 1073741824) | tostring)' /tmp/manifest.json
+          jq -r '"Layer count: " + (.layers | length | tostring)' /tmp/manifest.json
+          jq -r '"Config blob bytes: " + (.config.size | tostring)' /tmp/manifest.json
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Layer | Compressed GiB | Digest |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---:|---:|---|" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.layers | to_entries[] | "| " + ((.key+1)|tostring) + " | " + ((.value.size / 1073741824 * 100 | round / 100)|tostring) + " | \`" + (.value.digest[0:24]) + "...\` |"' /tmp/manifest.json >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Note:** Manifest sizes are compressed transfer sizes, not extracted filesystem sizes. Mapping layers to Dockerfile commands requires config/history inspection; no full image was downloaded." >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
