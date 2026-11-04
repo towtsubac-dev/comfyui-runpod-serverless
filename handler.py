@@ -211,7 +211,6 @@ def start_comfyui():
             "127.0.0.1",
             "--port",
             "8188",
-            "--use-sage-attention",
         ],
         cwd=COMFYUI_DIR,
         stdout=None,
@@ -737,7 +736,7 @@ def build_h3_t2v_workflow(prompt, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, le
 
 
 # ============================================================
-# Veda opt-in: leave Sage as the default for all existing clients.
+# Veda-only test: reject Sage explicitly.
 # ============================================================
 
 VEDA_PREDICTOR = "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
@@ -760,10 +759,8 @@ def validate_veda_sparsity(value, name):
 
 
 def apply_h3_attention(workflow, mode, generated_sparsity="trained", reference_sparsity="trained"):
-    if mode not in ("sage", "veda"):
-        raise ValueError("input.attention must be 'sage' or 'veda'.")
-    if mode == "sage":
-        return workflow
+    if mode != "veda":
+        raise ValueError("This Veda-only test image requires input.attention='veda'.")
     generated_sparsity = validate_veda_sparsity(generated_sparsity, "veda_generated_sparsity")
     reference_sparsity = validate_veda_sparsity(reference_sparsity, "veda_reference_sparsity")
     guider_nodes = [node for node in workflow.values()
@@ -973,7 +970,7 @@ def h3_t2v_generate(job_input):
         raise ValueError("input.width must be 256-1536 and divisible by 32.")
     if height < 256 or height > 1536 or height % 32 != 0:
         raise ValueError("input.height must be 256-1536 and divisible by 32.")
-    validate_h3_t2v_resolution(width, height, job_input.get("attention", "sage"))
+    validate_h3_t2v_resolution(width, height, job_input.get("attention", "veda"))
     if length < 22 or length > 124 or (length - 5) % 17 != 0:
         raise ValueError("input.length must be 17n+5, from 22 to 124.")
     if steps < 1 or steps > 16:
@@ -983,7 +980,7 @@ def h3_t2v_generate(job_input):
     workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
     workflow = apply_h3_attention(
         workflow,
-        job_input.get("attention", "sage"),
+        job_input.get("attention", "veda"),
         job_input.get("veda_generated_sparsity", "trained"),
         job_input.get("veda_reference_sparsity", "trained"),
     )
@@ -1123,7 +1120,7 @@ def h3_generate(job_input):
 
     workflow = apply_h3_attention(
         workflow,
-        job_input.get("attention", "sage"),
+        job_input.get("attention", "veda"),
         job_input.get("veda_generated_sparsity", "trained"),
         job_input.get("veda_reference_sparsity", "trained"),
     )
@@ -1523,7 +1520,7 @@ def h3_extend_generate(job_input):
         )
         workflow = apply_h3_attention(
             workflow,
-            job_input.get("attention", "sage"),
+            job_input.get("attention", "veda"),
             job_input.get("veda_generated_sparsity", "trained"),
             job_input.get("veda_reference_sparsity", "trained"),
         )
