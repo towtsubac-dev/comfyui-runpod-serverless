@@ -1101,6 +1101,60 @@ def _normalize_video_for_concat(source, destination, width, height):
     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
 
 
+def _read_boundary_luma(path, at_end):
+    # Compare small decoded grayscale frames; do not rely on MP4 metadata.
+    import numpy as np
+    info = _probe_video(path)
+    timestamp = max(0.0, info["duration"] - 0.12) if at_end else 0.08
+    cmd = [
+        "ffmpeg", "-v", "error", "-ss", str(timestamp), "-i", path,
+        "-frames:v", "1", "-vf", "scale=160:90,format=gray",
+        "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    if len(raw) != 160 * 90:
+        raise ValueError("Unable to decode boundary frame")
+    return np.frombuffer(raw, dtype=np.uint8).astype(np.float32) / 255.0
+
+
+def _match_extension_boundary(original_path, segment_path, temp_dir):
+    # Correct only the generated segment. Never color-grade the source video.
+    # Correlation guard prevents changing unrelated scenes at a hard cut.
+    import numpy as np
+    original = _read_boundary_luma(original_path, at_end=True)
+    generated = _read_boundary_luma(segment_path, at_end=False)
+    original_mean, generated_mean = float(original.mean()), float(generated.mean())
+    original_std, generated_std = float(original.std()), float(generated.std())
+    corr = float(np.corrcoef(original.ravel(), generated.ravel())[0, 1]) if min(original_std, generated_std) > 0.01 else 0.0
+    delta = generated_mean - original_mean
+    print(
+        f"[H3 EXTEND COLOR] original_mean={original_mean:.4f} "
+        f"segment_mean={generated_mean:.4f} delta={delta:.4f} "
+        f"correlation={corr:.4f} original_std={original_std:.4f} "
+        f"segment_std={generated_std:.4f}", flush=True,
+    )
+    if not np.isfinite(corr) or corr < 0.75 or delta < 0.045:
+        print("[H3 EXTEND COLOR] No correction: insufficient evidence of matching washed-out boundary", flush=True)
+        return segment_path
+    # Conservative adjustment; avoid large color changes or crushed highlights.
+    brightness = max(-0.12, -delta)
+    contrast = min(1.15, max(0.95, original_std / max(generated_std, 0.01)))
+    corrected_path = os.path.join(temp_dir, "color_matched_segment.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", segment_path,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", f"eq=brightness={brightness:.5f}:contrast={contrast:.5f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-movflags", "+faststart", corrected_path,
+        ],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print(f"[H3 EXTEND COLOR] Applied segment-only correction brightness={brightness:.4f} contrast={contrast:.4f}", flush=True)
+    return corrected_path
+
+
 def _concat_extended_video(original_path, segment_path, output_path):
     # Keep the original MP4 untouched until the final encode. The previous
     # pipeline encoded it once for normalization and again for concatenation,
@@ -1445,6 +1499,14 @@ def h3_extend_generate(job_input):
 
         combined_path = os.path.join(temp_dir, "extended_video.mp4")
         print(f"[H3 EXTEND] generated segment: {_probe_video(segment_path)}", flush=True)
+        # A diagnostic-only opt-out is available for controlled A/B testing.
+        if job_input.get("extension_color_match", True):
+            try:
+                segment_path = _match_extension_boundary(
+                    original_path, segment_path, temp_dir,
+                )
+            except Exception as exc:
+                print(f"[H3 EXTEND COLOR] Analysis failed, preserving unmodified segment: {exc}", flush=True)
         _concat_extended_video(original_path, segment_path, combined_path)
         print(f"[H3 EXTEND] combined output: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
