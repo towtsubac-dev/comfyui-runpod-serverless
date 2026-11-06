@@ -1156,55 +1156,46 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
 
 
 def _concat_extended_video(original_path, segment_path, output_path):
-    # Keep the original MP4 untouched until the final encode. The previous
-    # pipeline encoded it once for normalization and again for concatenation,
-    # which could amplify color shifts and compression artifacts.
+    # Normalize both streams inside a single filter graph. This avoids
+    # separately re-encoding the generated segment before the final MP4.
     info = _probe_video(original_path)
-    work_dir = os.path.dirname(output_path)
-    normalized_segment = os.path.join(work_dir, "normalized_segment.mp4")
-    _normalize_video_for_concat(
-        segment_path, normalized_segment, info["width"], info["height"]
+    seg_info = _probe_video(segment_path)
+    width, height = info["width"], info["height"]
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
     )
-    # Scale the original only within the final concat filter (single encode).
-    original_video_filter = (
-        f"[0:v:0]scale={info['width']}:{info['height']}:"
-        "force_original_aspect_ratio=decrease,"
-        f"pad={info['width']}:{info['height']}:(ow-iw)/2:(oh-ih)/2,"
-        "fps=24,setsar=1,format=yuv420p[v0];"
-    )
-    audio_filter = (
-        "[0:a:0]aresample=32000:async=1:first_pts=0,"
-        "aformat=sample_rates=32000:channel_layouts=stereo[a0];"
-        if info["has_audio"] else
-        "[2:a:0]atrim=duration=" + str(info["duration"]) +
-        ",asetpts=PTS-STARTPTS[a0];"
-    )
-    cmd = ["ffmpeg", "-y", "-i", original_path, "-i", normalized_segment]
-    if not info["has_audio"]:
-        cmd += [
-            "-f", "lavfi", "-i",
-            "anullsrc=channel_layout=stereo:sample_rate=32000",
-        ]
+    cmd = ["ffmpeg", "-y", "-i", original_path, "-i", segment_path]
+    # Add a silence source only when the relevant input has no audio.
+    silence_inputs = {}
+    for idx, stream_info in enumerate((info, seg_info)):
+        if not stream_info["has_audio"]:
+            silence_inputs[idx] = 2 + len(silence_inputs)
+            cmd += ["-f", "lavfi", "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=32000"]
+    filters = [
+        f"[0:v:0]{video_filter}[v0]",
+        f"[1:v:0]{video_filter}[v1]",
+    ]
+    for idx, stream_info in enumerate((info, seg_info)):
+        duration = stream_info["duration"]
+        source = f"{idx}:a:0" if stream_info["has_audio"] else f"{silence_inputs[idx]}:a:0"
+        filters.append(
+            f"[{source}]aresample=32000:async=1:first_pts=0,"
+            "aformat=sample_rates=32000:channel_layouts=stereo,"
+            f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS[a{idx}]"
+        )
+    filters.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]")
     cmd += [
-        "-filter_complex",
-        original_video_filter + audio_filter +
-        "[1:v:0]setpts=PTS-STARTPTS[v1];"
-        "[1:a:0]aresample=32000:async=1:first_pts=0,"
-        "aformat=sample_rates=32000:channel_layouts=stereo[a1];"
-        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]",
+        "-filter_complex", ";".join(filters),
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "32000", "-ac", "2",
         "-movflags", "+faststart", output_path,
     ]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
-    finally:
-        try:
-            os.remove(normalized_segment)
-        except OSError:
-            pass
+    subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
 
 
 def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
