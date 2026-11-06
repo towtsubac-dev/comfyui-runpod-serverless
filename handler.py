@@ -1549,18 +1549,32 @@ def h3_extend_generate(job_input):
         print(f"[H3 EXTEND] combined output: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
             combined_bytes = result_file.read()
-
+        outputs = [{
+            "type": "videos",
+            "filename": f"MiniMax_H3_Extended_{job_id}.mp4",
+            "data": base64.b64encode(combined_bytes).decode("utf-8"),
+        }]
+        # Optional controlled A/B: both files use the SAME generated H3 segment.
+        # No second model inference, no change to default Studio behavior.
+        if job_input.get("extension_compare_rgb", False):
+            raw_combined_path = os.path.join(temp_dir, "extended_no_rgb.mp4")
+            _concat_extended_video(original_path, os.path.join(
+                COMFYUI_DIR, "output", segment.get("subfolder", ""), segment["filename"]
+            ), raw_combined_path)
+            with open(raw_combined_path, "rb") as raw_file:
+                outputs.append({
+                    "type": "videos",
+                    "filename": f"MiniMax_H3_Extended_NO_RGB_{job_id}.mp4",
+                    "data": base64.b64encode(raw_file.read()).decode("utf-8"),
+                })
+            print("[H3 EXTEND COLOR] A/B comparison: RGB-corrected and uncorrected outputs from one generation", flush=True)
         return {
             "status": "ok",
             "prompt_id": prompt_id,
             "extend_seconds_requested": extend_seconds,
             "extension_frames": workflow["7"]["inputs"]["length"],
             "original_duration_seconds": round(info["duration"], 3),
-            "outputs": [{
-                "type": "videos",
-                "filename": f"MiniMax_H3_Extended_{job_id}.mp4",
-                "data": base64.b64encode(combined_bytes).decode("utf-8"),
-            }],
+            "outputs": outputs,
         }
     finally:
         for path in (input_path,):
