@@ -1116,9 +1116,35 @@ def _read_boundary_rgb(path, at_end):
     return np.frombuffer(raw, dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
 
 
+def _log_extension_start_luma(path, label, count=8):
+    # Diagnostic only: inspect every decoded frame in the first ~0.33 seconds.
+    # No changes to output video, audio, or existing RGB matching.
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path,
+        "-map", "0:v:0", "-frames:v", str(count),
+        "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    frame_size = 160 * 90 * 3
+    frames = len(raw) // frame_size
+    if frames == 0 or len(raw) % frame_size:
+        raise ValueError("Unable to decode extension-start frames")
+    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(frames, 90, 160, 3).astype(np.float32) / 255.0
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luma = pixels @ weights
+    means = np.round(luma.mean(axis=(1, 2)), 4).tolist()
+    print(f"[H3 EXTEND FRAME] {label} first_{frames}_luma={means}", flush=True)
+
+
 def _match_extension_boundary(original_path, segment_path, temp_dir):
     # Only correct a visually corresponding boundary; never grade source video.
     import numpy as np
+    try:
+        _log_extension_start_luma(segment_path, "raw")
+    except Exception as exc:
+        print(f"[H3 EXTEND FRAME] raw scan failed: {exc}", flush=True)
     original = _read_boundary_rgb(original_path, at_end=True)
     generated = _read_boundary_rgb(segment_path, at_end=False)
     gray_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -1165,6 +1191,10 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
         ],
         check=True, capture_output=True, text=True, timeout=300,
     )
+    try:
+        _log_extension_start_luma(corrected_path, "corrected")
+    except Exception as exc:
+        print(f"[H3 EXTEND FRAME] corrected scan failed: {exc}", flush=True)
     print(
         "[H3 EXTEND COLOR] RGB match applied "
         f"gain={gains.tolist()} offset={offsets.tolist()}", flush=True,
