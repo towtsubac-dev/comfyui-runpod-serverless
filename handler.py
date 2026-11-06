@@ -1102,37 +1102,53 @@ def _normalize_video_for_concat(source, destination, width, height):
 
 
 def _concat_extended_video(original_path, segment_path, output_path):
+    # Keep the original MP4 untouched until the final encode. The previous
+    # pipeline encoded it once for normalization and again for concatenation,
+    # which could amplify color shifts and compression artifacts.
     info = _probe_video(original_path)
     work_dir = os.path.dirname(output_path)
-    normalized_original = os.path.join(work_dir, "normalized_original.mp4")
     normalized_segment = os.path.join(work_dir, "normalized_segment.mp4")
-    _normalize_video_for_concat(
-        original_path, normalized_original, info["width"], info["height"]
-    )
     _normalize_video_for_concat(
         segment_path, normalized_segment, info["width"], info["height"]
     )
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", normalized_original,
-            "-i", normalized_segment,
-            "-filter_complex",
-            "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]",
-            "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
-            "-movflags", "+faststart", output_path,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=300,
+    # Scale the original only within the final concat filter (single encode).
+    original_video_filter = (
+        f"[0:v:0]scale={info['width']}:{info['height']}:"
+        "force_original_aspect_ratio=decrease,"
+        f"pad={info['width']}:{info['height']}:(ow-iw)/2:(oh-ih)/2,"
+        "fps=24,setsar=1,format=yuv420p[v0];"
     )
-    for path in (normalized_original, normalized_segment):
+    audio_filter = (
+        "[0:a:0]aresample=32000:async=1:first_pts=0,"
+        "aformat=sample_rates=32000:channel_layouts=stereo[a0];"
+        if info["has_audio"] else
+        "[2:a:0]atrim=duration=" + str(info["duration"]) +
+        ",asetpts=PTS-STARTPTS[a0];"
+    )
+    cmd = ["ffmpeg", "-y", "-i", original_path, "-i", normalized_segment]
+    if not info["has_audio"]:
+        cmd += [
+            "-f", "lavfi", "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=32000",
+        ]
+    cmd += [
+        "-filter_complex",
+        original_video_filter + audio_filter +
+        "[1:v:0]setpts=PTS-STARTPTS[v1];"
+        "[1:a:0]aresample=32000:async=1:first_pts=0,"
+        "aformat=sample_rates=32000:channel_layouts=stereo[a1];"
+        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]",
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "32000", "-ac", "2",
+        "-movflags", "+faststart", output_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+    finally:
         try:
-            os.remove(path)
+            os.remove(normalized_segment)
         except OSError:
             pass
 
