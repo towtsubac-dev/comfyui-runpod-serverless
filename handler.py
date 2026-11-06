@@ -1101,57 +1101,74 @@ def _normalize_video_for_concat(source, destination, width, height):
     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
 
 
-def _read_boundary_luma(path, at_end):
-    # Compare small decoded grayscale frames; do not rely on MP4 metadata.
+def _read_boundary_rgb(path, at_end):
     import numpy as np
     info = _probe_video(path)
     timestamp = max(0.0, info["duration"] - 0.12) if at_end else 0.08
     cmd = [
         "ffmpeg", "-v", "error", "-ss", str(timestamp), "-i", path,
-        "-frames:v", "1", "-vf", "scale=160:90,format=gray",
-        "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+        "-frames:v", "1", "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
     ]
     raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
-    if len(raw) != 160 * 90:
-        raise ValueError("Unable to decode boundary frame")
-    return np.frombuffer(raw, dtype=np.uint8).astype(np.float32) / 255.0
+    if len(raw) != 160 * 90 * 3:
+        raise ValueError("Unable to decode boundary RGB frame")
+    return np.frombuffer(raw, dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
 
 
 def _match_extension_boundary(original_path, segment_path, temp_dir):
-    # Correct only the generated segment. Never color-grade the source video.
-    # Correlation guard prevents changing unrelated scenes at a hard cut.
+    # Only correct a visually corresponding boundary; never grade source video.
     import numpy as np
-    original = _read_boundary_luma(original_path, at_end=True)
-    generated = _read_boundary_luma(segment_path, at_end=False)
-    original_mean, generated_mean = float(original.mean()), float(generated.mean())
-    original_std, generated_std = float(original.std()), float(generated.std())
-    corr = float(np.corrcoef(original.ravel(), generated.ravel())[0, 1]) if min(original_std, generated_std) > 0.01 else 0.0
-    delta = generated_mean - original_mean
+    original = _read_boundary_rgb(original_path, at_end=True)
+    generated = _read_boundary_rgb(segment_path, at_end=False)
+    gray_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    orig_luma = original @ gray_weights
+    gen_luma = generated @ gray_weights
+    orig_std, gen_std = float(orig_luma.std()), float(gen_luma.std())
+    corr = float(np.corrcoef(orig_luma.ravel(), gen_luma.ravel())[0, 1]) if min(orig_std, gen_std) > 0.01 else 0.0
+    delta = float(gen_luma.mean() - orig_luma.mean())
     print(
-        f"[H3 EXTEND COLOR] original_mean={original_mean:.4f} "
-        f"segment_mean={generated_mean:.4f} delta={delta:.4f} "
-        f"correlation={corr:.4f} original_std={original_std:.4f} "
-        f"segment_std={generated_std:.4f}", flush=True,
+        f"[H3 EXTEND COLOR] original_mean={orig_luma.mean():.4f} "
+        f"segment_mean={gen_luma.mean():.4f} delta={delta:.4f} "
+        f"correlation={corr:.4f} original_std={orig_std:.4f} "
+        f"segment_std={gen_std:.4f}", flush=True,
     )
-    if not np.isfinite(corr) or corr < 0.75 or delta < 0.045:
-        print("[H3 EXTEND COLOR] No correction: insufficient evidence of matching washed-out boundary", flush=True)
+    if not np.isfinite(corr) or corr < 0.75:
+        print("[H3 EXTEND COLOR] Skipped: boundary images differ too much", flush=True)
         return segment_path
-    # Conservative adjustment; avoid large color changes or crushed highlights.
-    brightness = max(-0.12, -delta)
-    contrast = min(1.15, max(0.95, original_std / max(generated_std, 0.01)))
+
+    # Match channel black/white levels using robust percentiles. RGB matching
+    # addresses lifted blacks and color casts that a global brightness filter misses.
+    orig_low = np.percentile(original, 10, axis=(0, 1))
+    orig_high = np.percentile(original, 90, axis=(0, 1))
+    gen_low = np.percentile(generated, 10, axis=(0, 1))
+    gen_high = np.percentile(generated, 90, axis=(0, 1))
+    gains = np.clip((orig_high - orig_low) / np.maximum(gen_high - gen_low, 0.05), 0.82, 1.18)
+    offsets = np.clip(orig_low - gains * gen_low, -0.14, 0.14)
+    if float(np.max(np.abs(gains - 1))) < 0.015 and float(np.max(np.abs(offsets))) < 0.012:
+        print("[H3 EXTEND COLOR] Skipped: RGB levels already match", flush=True)
+        return segment_path
+    # lutrgb maps each channel without changing the source or the audio.
+    lut = ":".join(
+        f"{channel}='clip(val*{float(gain):.6f}+{float(offset)*255:.6f},0,255)'"
+        for channel, gain, offset in zip(("r", "g", "b"), gains, offsets)
+    )
     corrected_path = os.path.join(temp_dir, "color_matched_segment.mp4")
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", segment_path,
             "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", f"eq=brightness={brightness:.5f}:contrast={contrast:.5f}",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+            "-vf", f"format=rgb24,lutrgb={lut},format=yuv420p",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
             "-pix_fmt", "yuv420p", "-c:a", "copy",
             "-movflags", "+faststart", corrected_path,
         ],
         check=True, capture_output=True, text=True, timeout=300,
     )
-    print(f"[H3 EXTEND COLOR] Applied segment-only correction brightness={brightness:.4f} contrast={contrast:.4f}", flush=True)
+    print(
+        "[H3 EXTEND COLOR] RGB match applied "
+        f"gain={gains.tolist()} offset={offsets.tolist()}", flush=True,
+    )
     return corrected_path
 
 
