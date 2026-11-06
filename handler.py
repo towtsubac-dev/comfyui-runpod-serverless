@@ -1332,9 +1332,16 @@ def h3_extend_generate(job_input):
         with open(input_path, "wb") as video_file:
             video_file.write(video_bytes)
 
+        # Keep the uploaded source untouched for final concatenation.
+        # The normalized copy is only for H3 context encoding.
+        original_path = os.path.join(temp_dir, "original_source.mp4")
+        with open(original_path, "wb") as original_file:
+            original_file.write(video_bytes)
+
         # Normalize only the extension input: H3 requires dimensions divisible by
         # 32. Preserve aspect ratio and pad to the nearest compatible dimensions.
         raw_info = _probe_video(input_path)
+        print(f"[H3 EXTEND] original source: {raw_info}", flush=True)
         if raw_info["frames"] < 5:
             raise ValueError("The input video is too short for MiniMax H3 extension.")
 
@@ -1346,17 +1353,23 @@ def h3_extend_generate(job_input):
             f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
             "setsar=1,fps=24,format=yuv420p"
         )
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
+        normalize_cmd = ["ffmpeg", "-y", "-i", input_path]
+        if raw_info["has_audio"]:
+            normalize_cmd += ["-map", "0:v:0", "-map", "0:a:0"]
+        else:
+            normalize_cmd += [
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
-                "-shortest", "-movflags", "+faststart", normalized_path,
-            ],
+            ]
+        normalize_cmd += [
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", normalized_path,
+        ]
+        subprocess.run(
+            normalize_cmd,
             check=True, capture_output=True, text=True, timeout=300,
         )
         os.replace(normalized_path, input_path)
@@ -1415,7 +1428,9 @@ def h3_extend_generate(job_input):
             raise RuntimeError(f"Generated extension segment was not found: {segment_path}")
 
         combined_path = os.path.join(temp_dir, "extended_video.mp4")
-        _concat_extended_video(input_path, segment_path, combined_path)
+        print(f"[H3 EXTEND] generated segment: {_probe_video(segment_path)}", flush=True)
+        _concat_extended_video(original_path, segment_path, combined_path)
+        print(f"[H3 EXTEND] combined output: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
             combined_bytes = result_file.read()
 
