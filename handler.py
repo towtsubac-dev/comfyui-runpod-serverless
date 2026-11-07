@@ -1320,7 +1320,9 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
     # length; bounded to 6-12 frames to avoid a persistent brightness shift.
     decline_per_frame = max(0.001, float((means[0] - means[7]) / 7))
     fade_frames = int(np.clip(round(initial_excess / decline_per_frame), 6, 12))
-    adjustment = min(initial_excess, 0.14)
+    # v3 overcorrected by ~0.028 at the actual join; start with a conservative 80% gain.
+    # FFmpeg eq brightness is not a one-to-one change in decoded mean luma.
+    adjustment = min(initial_excess * 0.80, 0.14)
     repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
     fade = f"eq=brightness='-{adjustment:.6f}*max(0,1-n/{fade_frames})':eval=frame"
     subprocess.run(
@@ -1341,10 +1343,11 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
     )
     try:
         _log_extension_start_luma(repaired_path, f"{label} post_repair")
-        first_after = _read_boundary_rgb(repaired_path, at_end=False)
+        # Decode frame zero exactly: _read_boundary_rgb samples a later frame.
+        first_after = _boundary_exact(repaired_path, False)
         after_luma = float((first_after @ weights).mean())
         print(
-            f"[H3 EXTEND FLASH] {label}: post_boundary_luma={after_luma:.4f} "
+            f"[H3 EXTEND FLASH] {label}: post_first_frame_luma={after_luma:.4f} "
             f"source_luma={exact_luma:.4f} residual={after_luma-exact_luma:+.4f}",
             flush=True,
         )
