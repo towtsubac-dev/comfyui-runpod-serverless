@@ -1202,51 +1202,91 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
     return corrected_path
 
 
-def _repair_extension_start_flash(segment_path, temp_dir, label):
-    """Replace only a confirmed two-frame luminance spike, preserving A/V duration."""
+def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
+    """Opt-in boundary repair: isolated 1/2-frame spikes or short exposure drift."""
     import numpy as np
     cmd = [
         "ffmpeg", "-v", "error", "-i", segment_path, "-map", "0:v:0",
-        "-frames:v", "8", "-vf", "scale=160:90,format=rgb24",
+        "-frames:v", "12", "-vf", "scale=160:90,format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
     ]
     raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
     size = 160 * 90 * 3
-    if len(raw) < 6 * size or len(raw) % size:
+    if len(raw) < 8 * size or len(raw) % size:
         print(f"[H3 EXTEND FLASH] {label}: insufficient frames; skipped", flush=True)
         return segment_path
     pixels = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
-    luma = pixels @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    means = luma.mean(axis=(1, 2))
-    baseline = float(np.median(means[2:7]))
-    excess = means[:2] - baseline
-    tail = float(np.max(np.abs(means[2:7] - baseline)))
-    # Require two consecutive bright frames and a stable following baseline.
-    # Conservative thresholds avoid altering ordinary motion and exposure shifts.
-    detected = bool(np.all(excess > 0.075) and tail < 0.035)
+    means = (pixels @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).mean(axis=(1, 2))
+    baseline = float(np.median(means[3:8]))
+    tail_spread = float(np.max(np.abs(means[3:8] - baseline)))
+    # An isolated spike must have a stable baseline; don't trim gradual fades.
+    spike_count = 0
+    if tail_spread < 0.035:
+        if means[0] - baseline > 0.075 and abs(float(means[1] - baseline)) < 0.035:
+            spike_count = 1
+        elif (means[0] - baseline > 0.075 and means[1] - baseline > 0.075
+              and abs(float(means[2] - baseline)) < 0.035):
+            spike_count = 2
     print(
-        f"[H3 EXTEND FLASH] {label}: first={means[:2].round(4).tolist()} "
-        f"baseline={baseline:.4f} tail_spread={tail:.4f} detected={detected}",
+        f"[H3 EXTEND FLASH] {label}: first={means[:3].round(4).tolist()} "
+        f"baseline={baseline:.4f} tail_spread={tail_spread:.4f} spike_frames={spike_count}",
         flush=True,
     )
-    if not detected:
+    if spike_count:
+        repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", segment_path,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", f"fps=24,trim=start_frame={spike_count},setpts=PTS-STARTPTS,"
+                       f"tpad=start={spike_count}:start_mode=clone",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                "-pix_fmt", "yuv420p", "-c:a", "copy",
+                "-movflags", "+faststart", repaired_path,
+            ],
+            check=True, capture_output=True, text=True, timeout=300,
+        )
+        print(f"[H3 EXTEND FLASH] {label}: replaced first {spike_count} frames", flush=True)
+        return repaired_path
+
+    if original_path is None:
         return segment_path
+    # Only treat a sustained, smooth excess as drift when boundary images match.
+    original = _read_boundary_rgb(original_path, at_end=True)
+    generated = _read_boundary_rgb(segment_path, at_end=False)
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    o_luma, g_luma = original @ weights, generated @ weights
+    correlation = (float(np.corrcoef(o_luma.ravel(), g_luma.ravel())[0, 1])
+                   if min(float(o_luma.std()), float(g_luma.std())) > 0.01 else 0.0)
+    delta = float(means[0] - o_luma.mean())
+    downward = bool(np.mean(np.diff(means[:8])) < -0.003
+                    and np.count_nonzero(np.diff(means[:8]) < 0) >= 5)
+    eligible = bool(np.isfinite(correlation) and correlation >= 0.90
+                    and downward and 0.065 < delta < 0.20)
+    print(
+        f"[H3 EXTEND FLASH] {label}: drift_delta={delta:.4f} "
+        f"correlation={correlation:.4f} downward={downward} eligible={eligible}",
+        flush=True,
+    )
+    if not eligible:
+        return segment_path
+    # Conservative luminance-only fade, first 12 frames (0.5s), capped to 0.09.
+    # Do not alter source video, audio samples, or later extension frames.
+    adjustment = min(delta, 0.09)
     repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-    # Keep frame count and audio timing unchanged: replace first two video frames
-    # with clones of frame 3, rather than deleting time from the video.
+    fade = f"eq=brightness='-{adjustment:.6f}*max(0,1-n/12)':eval=frame"
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", segment_path,
             "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", "fps=24,trim=start_frame=2,setpts=PTS-STARTPTS,"
-                   "tpad=start=2:start_mode=clone",
+            "-vf", f"fps=24,{fade}",
             "-c:v", "libx264", "-preset", "medium", "-crf", "16",
             "-pix_fmt", "yuv420p", "-c:a", "copy",
             "-movflags", "+faststart", repaired_path,
         ],
         check=True, capture_output=True, text=True, timeout=300,
     )
-    print(f"[H3 EXTEND FLASH] {label}: replaced first 2 frames", flush=True)
+    print(f"[H3 EXTEND FLASH] {label}: gradual correction applied delta={adjustment:.4f}", flush=True)
     return repaired_path
 
 
@@ -1595,7 +1635,7 @@ def h3_extend_generate(job_input):
                 print(f"[H3 EXTEND COLOR] Analysis failed, preserving unmodified segment: {exc}", flush=True)
         if job_input.get("extension_flash_repair", False):
             try:
-                segment_path = _repair_extension_start_flash(segment_path, temp_dir, "corrected")
+                segment_path = _repair_extension_start_flash(segment_path, temp_dir, "corrected", original_path)
             except Exception as exc:
                 print(f"[H3 EXTEND FLASH] corrected repair failed: {exc}", flush=True)
         _concat_extended_video(original_path, segment_path, combined_path)
@@ -1616,7 +1656,7 @@ def h3_extend_generate(job_input):
             )
             if job_input.get("extension_flash_repair", False):
                 try:
-                    raw_segment_path = _repair_extension_start_flash(raw_segment_path, temp_dir, "raw")
+                    raw_segment_path = _repair_extension_start_flash(raw_segment_path, temp_dir, "raw", original_path)
                 except Exception as exc:
                     print(f"[H3 EXTEND FLASH] raw repair failed: {exc}", flush=True)
             _concat_extended_video(original_path, raw_segment_path, raw_combined_path)
