@@ -1306,11 +1306,23 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
     )
     if not eligible:
         return segment_path
-    # Conservative luminance-only fade, first 12 frames (0.5s), capped to 0.09.
-    # Do not alter source video, audio samples, or later extension frames.
-    adjustment = min(delta, 0.09)
+    # Match the actual join, rather than a frame sampled 0.12s before the end.
+    # Follow the measured decay; never force later frames to source brightness.
+    if "src_exact" not in locals():
+        print(f"[H3 EXTEND FLASH] {label}: exact boundary unavailable; skipped", flush=True)
+        return segment_path
+    exact_luma = float((src_exact @ weights).mean())
+    initial_excess = float(means[0] - exact_luma)
+    if not (0.065 < initial_excess < 0.20):
+        print(f"[H3 EXTEND FLASH] {label}: exact excess outside safe range; skipped", flush=True)
+        return segment_path
+    # Use the observed first-eight-frame exposure decline to estimate the fade
+    # length; bounded to 6-12 frames to avoid a persistent brightness shift.
+    decline_per_frame = max(0.001, float((means[0] - means[7]) / 7))
+    fade_frames = int(np.clip(round(initial_excess / decline_per_frame), 6, 12))
+    adjustment = min(initial_excess, 0.14)
     repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-    fade = f"eq=brightness='-{adjustment:.6f}*max(0,1-n/12)':eval=frame"
+    fade = f"eq=brightness='-{adjustment:.6f}*max(0,1-n/{fade_frames})':eval=frame"
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", segment_path,
@@ -1322,7 +1334,22 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         ],
         check=True, capture_output=True, text=True, timeout=300,
     )
-    print(f"[H3 EXTEND FLASH] {label}: gradual correction applied delta={adjustment:.4f}", flush=True)
+    print(
+        f"[H3 EXTEND FLASH] {label}: measured correction applied "
+        f"exact_delta={initial_excess:.4f} adjustment={adjustment:.4f} "
+        f"fade_frames={fade_frames}", flush=True,
+    )
+    try:
+        _log_extension_start_luma(repaired_path, f"{label} post_repair")
+        first_after = _read_boundary_rgb(repaired_path, at_end=False)
+        after_luma = float((first_after @ weights).mean())
+        print(
+            f"[H3 EXTEND FLASH] {label}: post_boundary_luma={after_luma:.4f} "
+            f"source_luma={exact_luma:.4f} residual={after_luma-exact_luma:+.4f}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[H3 EXTEND FLASH] {label}: post-repair diagnostic failed: {exc}", flush=True)
     return repaired_path
 
 
