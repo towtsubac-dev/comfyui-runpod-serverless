@@ -1316,15 +1316,22 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
     if not (0.065 < initial_excess < 0.20):
         print(f"[H3 EXTEND FLASH] {label}: exact excess outside safe range; skipped", flush=True)
         return segment_path
-    # Use the observed first-eight-frame exposure decline to estimate the fade
-    # length; bounded to 6-12 frames to avoid a persistent brightness shift.
-    decline_per_frame = max(0.001, float((means[0] - means[7]) / 7))
-    fade_frames = int(np.clip(round(initial_excess / decline_per_frame), 6, 12))
-    # v3 overcorrected by ~0.028 at the actual join; start with a conservative 80% gain.
-    # FFmpeg eq brightness is not a one-to-one change in decoded mean luma.
-    adjustment = min(initial_excess * 0.80, 0.14)
+    # v5: use measured early-frame luma to avoid the rebound caused by a
+    # fixed linear fade. Follow a smooth target from the source boundary to
+    # the naturally generated frame 8; do not change frames after frame 8.
+    fade_frames = 7
+    end_luma = float(means[7])
+    target = np.linspace(exact_luma, end_luma, fade_frames + 1)
+    # FFmpeg eq brightness is stronger than the measured RGB mean delta.
+    adjustments = np.clip((means[:fade_frames] - target[:fade_frames]) * 0.80, 0, 0.14)
+    adjustment = float(adjustments[0])
     repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-    fade = f"eq=brightness='-{adjustment:.6f}*max(0,1-n/{fade_frames})':eval=frame"
+    # Piecewise constant per-frame correction, explicitly zero from frame 8.
+    # ffmpeg eq expression evaluates frame number n, starting at zero.
+    expr = "0"
+    for idx in range(fade_frames - 1, -1, -1):
+        expr = f"if(lt(n,{idx+1}),-{float(adjustments[idx]):.6f},{expr})"
+    fade = f"eq=brightness='{expr}':eval=frame"
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", segment_path,
@@ -1339,7 +1346,7 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
     print(
         f"[H3 EXTEND FLASH] {label}: measured correction applied "
         f"exact_delta={initial_excess:.4f} adjustment={adjustment:.4f} "
-        f"fade_frames={fade_frames}", flush=True,
+        f"fade_frames={fade_frames} per_frame_adjustments={adjustments.round(4).tolist()}", flush=True,
     )
     try:
         _log_extension_start_luma(repaired_path, f"{label} post_repair")
