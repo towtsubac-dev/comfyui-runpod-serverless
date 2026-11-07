@@ -1251,6 +1251,42 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
 
     if original_path is None:
         return segment_path
+    # Diagnose the actual join (last source frame vs first extension frame).
+    # The legacy at_end=True probe samples ~0.12s before the end.
+    try:
+        def _boundary_exact(path, last):
+            args = ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0"]
+            if last:
+                args += ["-vf", "scale=160:90,format=rgb24"]
+                args += ["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+                data = subprocess.run(args, check=True, capture_output=True, timeout=180).stdout
+                frame_bytes = 160 * 90 * 3
+                if len(data) < frame_bytes or len(data) % frame_bytes:
+                    raise ValueError("invalid decoded source frame size")
+                data = data[-frame_bytes:]
+            else:
+                args += ["-frames:v", "1", "-vf", "scale=160:90,format=rgb24",
+                         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+                data = subprocess.run(args, check=True, capture_output=True, timeout=60).stdout
+            if len(data) != 160 * 90 * 3:
+                raise ValueError("invalid boundary frame")
+            return np.frombuffer(data, dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+
+        src_exact = _boundary_exact(original_path, True)
+        seg_exact = _boundary_exact(segment_path, False)
+        src_rgb = src_exact.mean(axis=(0, 1))
+        seg_rgb = seg_exact.mean(axis=(0, 1))
+        rgb_delta = seg_rgb - src_rgb
+        print(
+            f"[H3 EXTEND BOUNDARY] {label}: source_rgb={src_rgb.round(4).tolist()} "
+            f"segment_rgb={seg_rgb.round(4).tolist()} "
+            f"delta_rgb={rgb_delta.round(4).tolist()} "
+            f"source_luma={float((src_exact @ np.array([0.2126,0.7152,0.0722],dtype=np.float32)).mean()):.4f} "
+            f"segment_luma={float((seg_exact @ np.array([0.2126,0.7152,0.0722],dtype=np.float32)).mean()):.4f}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[H3 EXTEND BOUNDARY] {label}: diagnostic failed: {exc}", flush=True)
     # Only treat a sustained, smooth excess as drift when boundary images match.
     original = _read_boundary_rgb(original_path, at_end=True)
     generated = _read_boundary_rgb(segment_path, at_end=False)
