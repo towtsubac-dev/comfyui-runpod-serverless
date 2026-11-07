@@ -1227,6 +1227,29 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         elif (means[0] - baseline > 0.075 and means[1] - baseline > 0.075
               and abs(float(means[2] - baseline)) < 0.035):
             spike_count = 2
+    # v6: detect a two-frame exposure plateau followed by a sudden return
+    # to the source brightness. The legacy 0.075 threshold misses this case.
+    # Require a stable tail and a third frame close to the source boundary,
+    # so intentional brightness changes are not treated as seam flashes.
+    if spike_count == 0 and original_path is not None and tail_spread < 0.035:
+        try:
+            weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+            source_probe = _read_boundary_rgb(original_path, at_end=True)
+            source_mean = float((source_probe @ weights).mean())
+            plateau = abs(float(means[0] - means[1])) < 0.018
+            sudden_drop = min(float(means[0] - means[2]), float(means[1] - means[2])) > 0.045
+            near_source = abs(float(means[2] - source_mean)) < 0.030
+            stable_after = abs(float(means[3] - means[2])) < 0.025
+            if plateau and sudden_drop and near_source and stable_after:
+                spike_count = 2
+                print(
+                    f"[H3 EXTEND FLASH] {label}: v6 two-frame seam spike "
+                    f"source={source_mean:.4f} first={means[0]:.4f} "
+                    f"second={means[1]:.4f} third={means[2]:.4f}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[H3 EXTEND FLASH] {label}: v6 spike check skipped: {exc}", flush=True)
     print(
         f"[H3 EXTEND FLASH] {label}: first={means[:3].round(4).tolist()} "
         f"baseline={baseline:.4f} tail_spread={tail_spread:.4f} spike_frames={spike_count}",
