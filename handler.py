@@ -1203,7 +1203,7 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
 
 
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
-    """Opt-in boundary repair: isolated 1/2-frame spikes or short exposure drift."""
+    """Opt-in v7 repair: correct only a two-frame brightness flash at the join."""
     import numpy as np
     cmd = [
         "ffmpeg", "-v", "error", "-i", segment_path, "-map", "0:v:0",
@@ -1217,172 +1217,62 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         return segment_path
     pixels = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
     means = (pixels @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).mean(axis=(1, 2))
-    baseline = float(np.median(means[3:8]))
-    tail_spread = float(np.max(np.abs(means[3:8] - baseline)))
-    # An isolated spike must have a stable baseline; don't trim gradual fades.
-    spike_count = 0
-    if tail_spread < 0.035:
-        if means[0] - baseline > 0.075 and abs(float(means[1] - baseline)) < 0.035:
-            spike_count = 1
-        elif (means[0] - baseline > 0.075 and means[1] - baseline > 0.075
-              and abs(float(means[2] - baseline)) < 0.035):
-            spike_count = 2
-    # v6: detect a two-frame exposure plateau followed by a sudden return
-    # to the source brightness. The legacy 0.075 threshold misses this case.
-    # Require a stable tail and a third frame close to the source boundary,
-    # so intentional brightness changes are not treated as seam flashes.
-    if spike_count == 0 and original_path is not None and tail_spread < 0.035:
-        try:
-            weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-            source_probe = _read_boundary_rgb(original_path, at_end=True)
-            source_mean = float((source_probe @ weights).mean())
-            plateau = abs(float(means[0] - means[1])) < 0.018
-            sudden_drop = min(float(means[0] - means[2]), float(means[1] - means[2])) > 0.045
-            near_source = abs(float(means[2] - source_mean)) < 0.030
-            stable_after = abs(float(means[3] - means[2])) < 0.025
-            if plateau and sudden_drop and near_source and stable_after:
-                spike_count = 2
-                print(
-                    f"[H3 EXTEND FLASH] {label}: v6 two-frame seam spike "
-                    f"source={source_mean:.4f} first={means[0]:.4f} "
-                    f"second={means[1]:.4f} third={means[2]:.4f}",
-                    flush=True,
-                )
-        except Exception as exc:
-            print(f"[H3 EXTEND FLASH] {label}: v6 spike check skipped: {exc}", flush=True)
-    print(
-        f"[H3 EXTEND FLASH] {label}: first={means[:3].round(4).tolist()} "
-        f"baseline={baseline:.4f} tail_spread={tail_spread:.4f} spike_frames={spike_count}",
-        flush=True,
-    )
-    if spike_count:
-        repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", segment_path,
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-vf", f"fps=24,trim=start_frame={spike_count},setpts=PTS-STARTPTS,"
-                       f"tpad=start={spike_count}:start_mode=clone",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-                "-pix_fmt", "yuv420p", "-c:a", "copy",
-                "-movflags", "+faststart", repaired_path,
-            ],
-            check=True, capture_output=True, text=True, timeout=300,
-        )
-        print(f"[H3 EXTEND FLASH] {label}: replaced first {spike_count} frames", flush=True)
-        return repaired_path
-
+    # v7: preserve the v5 unmodified motion and all frames from index 2.
+    # Correct only an isolated two-frame brightness plateau at the join.
     if original_path is None:
         return segment_path
-    # Diagnose the actual join (last source frame vs first extension frame).
-    # The legacy at_end=True probe samples ~0.12s before the end.
-    try:
-        def _boundary_exact(path, last):
-            args = ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0"]
-            if last:
-                args += ["-vf", "scale=160:90,format=rgb24"]
-                args += ["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-                data = subprocess.run(args, check=True, capture_output=True, timeout=180).stdout
-                frame_bytes = 160 * 90 * 3
-                if len(data) < frame_bytes or len(data) % frame_bytes:
-                    raise ValueError("invalid decoded source frame size")
-                data = data[-frame_bytes:]
-            else:
-                args += ["-frames:v", "1", "-vf", "scale=160:90,format=rgb24",
-                         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-                data = subprocess.run(args, check=True, capture_output=True, timeout=60).stdout
-            if len(data) != 160 * 90 * 3:
-                raise ValueError("invalid boundary frame")
-            return np.frombuffer(data, dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
-
-        src_exact = _boundary_exact(original_path, True)
-        seg_exact = _boundary_exact(segment_path, False)
-        src_rgb = src_exact.mean(axis=(0, 1))
-        seg_rgb = seg_exact.mean(axis=(0, 1))
-        rgb_delta = seg_rgb - src_rgb
-        print(
-            f"[H3 EXTEND BOUNDARY] {label}: source_rgb={src_rgb.round(4).tolist()} "
-            f"segment_rgb={seg_rgb.round(4).tolist()} "
-            f"delta_rgb={rgb_delta.round(4).tolist()} "
-            f"source_luma={float((src_exact @ np.array([0.2126,0.7152,0.0722],dtype=np.float32)).mean()):.4f} "
-            f"segment_luma={float((seg_exact @ np.array([0.2126,0.7152,0.0722],dtype=np.float32)).mean()):.4f}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"[H3 EXTEND BOUNDARY] {label}: diagnostic failed: {exc}", flush=True)
-    # Only treat a sustained, smooth excess as drift when boundary images match.
-    original = _read_boundary_rgb(original_path, at_end=True)
-    generated = _read_boundary_rgb(segment_path, at_end=False)
     weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    o_luma, g_luma = original @ weights, generated @ weights
-    correlation = (float(np.corrcoef(o_luma.ravel(), g_luma.ravel())[0, 1])
-                   if min(float(o_luma.std()), float(g_luma.std())) > 0.01 else 0.0)
-    delta = float(means[0] - o_luma.mean())
-    downward = bool(np.mean(np.diff(means[:8])) < -0.003
-                    and np.count_nonzero(np.diff(means[:8]) < 0) >= 5)
-    eligible = bool(np.isfinite(correlation) and correlation >= 0.90
-                    and downward and 0.065 < delta < 0.20)
+    try:
+        source_raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", original_path, "-map", "0:v:0",
+             "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo",
+             "-pix_fmt", "rgb24", "pipe:1"],
+            check=True, capture_output=True, timeout=180,
+        ).stdout
+        if len(source_raw) < size or len(source_raw) % size:
+            raise ValueError("invalid decoded source boundary")
+        source_last = np.frombuffer(source_raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+        source_luma = float((source_last @ weights).mean())
+    except Exception as exc:
+        print(f"[H3 EXTEND FLASH] {label}: v7 source probe failed; unchanged: {exc}", flush=True)
+        return segment_path
+
+    plateau = abs(float(means[0] - means[1])) < 0.018
+    elevated = min(float(means[0] - source_luma), float(means[1] - source_luma)) > 0.045
+    return_to_source = abs(float(means[2] - source_luma)) < 0.030
+    sharp_drop = min(float(means[0] - means[2]), float(means[1] - means[2])) > 0.045
+    stable_after = abs(float(means[3] - means[2])) < 0.025
+    eligible = bool(plateau and elevated and return_to_source and sharp_drop and stable_after)
     print(
-        f"[H3 EXTEND FLASH] {label}: drift_delta={delta:.4f} "
-        f"correlation={correlation:.4f} downward={downward} eligible={eligible}",
+        f"[H3 EXTEND FLASH] {label}: v7 two-frame check source={source_luma:.4f} "
+        f"first_3={means[:3].round(4).tolist()} eligible={eligible}",
         flush=True,
     )
     if not eligible:
+        print(f"[H3 EXTEND FLASH] {label}: v7 no isolated seam flash; preserving segment", flush=True)
         return segment_path
-    # Match the actual join, rather than a frame sampled 0.12s before the end.
-    # Follow the measured decay; never force later frames to source brightness.
-    if "src_exact" not in locals():
-        print(f"[H3 EXTEND FLASH] {label}: exact boundary unavailable; skipped", flush=True)
-        return segment_path
-    exact_luma = float((src_exact @ weights).mean())
-    initial_excess = float(means[0] - exact_luma)
-    if not (0.065 < initial_excess < 0.20):
-        print(f"[H3 EXTEND FLASH] {label}: exact excess outside safe range; skipped", flush=True)
-        return segment_path
-    # v5: use measured early-frame luma to avoid the rebound caused by a
-    # fixed linear fade. Follow a smooth target from the source boundary to
-    # the naturally generated frame 8; do not change frames after frame 8.
-    fade_frames = 7
-    end_luma = float(means[7])
-    target = np.linspace(exact_luma, end_luma, fade_frames + 1)
-    # FFmpeg eq brightness is stronger than the measured RGB mean delta.
-    adjustments = np.clip((means[:fade_frames] - target[:fade_frames]) * 0.80, 0, 0.14)
-    adjustment = float(adjustments[0])
+
+    # eq brightness does not map 1:1 to decoded luma. The observed 0.80
+    # scale from v5/v6 is a starting estimate; keep frames >=2 untouched.
+    adjustments = np.clip((means[:2] - source_luma) * 0.80, 0, 0.14)
+    expression = (
+        f"if(lt(n,1),-{float(adjustments[0]):.6f},"
+        f"if(lt(n,2),-{float(adjustments[1]):.6f},0))"
+    )
     repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
-    # Piecewise constant per-frame correction, explicitly zero from frame 8.
-    # ffmpeg eq expression evaluates frame number n, starting at zero.
-    expr = "0"
-    for idx in range(fade_frames - 1, -1, -1):
-        expr = f"if(lt(n,{idx+1}),-{float(adjustments[idx]):.6f},{expr})"
-    fade = f"eq=brightness='{expr}':eval=frame"
     subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", segment_path,
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", f"fps=24,{fade}",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-            "-pix_fmt", "yuv420p", "-c:a", "copy",
-            "-movflags", "+faststart", repaired_path,
-        ],
+        ["ffmpeg", "-y", "-i", segment_path, "-map", "0:v:0", "-map", "0:a:0?",
+         "-vf", f"fps=24,eq=brightness='{expression}':eval=frame",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+         "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart",
+         repaired_path],
         check=True, capture_output=True, text=True, timeout=300,
     )
     print(
-        f"[H3 EXTEND FLASH] {label}: measured correction applied "
-        f"exact_delta={initial_excess:.4f} adjustment={adjustment:.4f} "
-        f"fade_frames={fade_frames} per_frame_adjustments={adjustments.round(4).tolist()}", flush=True,
+        f"[H3 EXTEND FLASH] {label}: v7 corrected only first 2 frames "
+        f"adjustments={adjustments.round(4).tolist()}", flush=True,
     )
-    try:
-        _log_extension_start_luma(repaired_path, f"{label} post_repair")
-        # Decode frame zero exactly: _read_boundary_rgb samples a later frame.
-        first_after = _boundary_exact(repaired_path, False)
-        after_luma = float((first_after @ weights).mean())
-        print(
-            f"[H3 EXTEND FLASH] {label}: post_first_frame_luma={after_luma:.4f} "
-            f"source_luma={exact_luma:.4f} residual={after_luma-exact_luma:+.4f}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"[H3 EXTEND FLASH] {label}: post-repair diagnostic failed: {exc}", flush=True)
+    _log_extension_start_luma(repaired_path, f"{label} post_repair")
     return repaired_path
 
 
