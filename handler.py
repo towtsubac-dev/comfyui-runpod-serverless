@@ -1153,27 +1153,56 @@ def _probe_extension_start_rgb(path, count=12):
     return np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
 
 
-def _find_extension_stable_anchor(frames):
-    """Return (RGB calibration frame, flash prefix length), or (None, None).
+def _read_extension_source_last_rgb(path):
+    """Read the final decoded source frame, not a frame at an approximate timestamp."""
+    import numpy as np
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+         "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "pipe:1"],
+        check=True, capture_output=True, timeout=180,
+    ).stdout
+    size = 160 * 90 * 3
+    if len(raw) < size or len(raw) % size:
+        raise ValueError("Cannot inspect final source frame")
+    return np.frombuffer(raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
 
-    A flash can cover 1, 2 or 3+ frames. Identify its END using a steady
-    three-frame window rather than assuming the third frame is trustworthy.
-    If uncertain, preserve the segment instead of grading its whole duration.
-    """
+
+def _find_extension_stable_anchor(frames, source):
+    """Find recovered exposure; an overexposed plateau is NOT a stable anchor."""
     import numpy as np
     weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
     means = (frames @ weights).mean(axis=(1, 2))
-    for i in range(min(7, len(means) - 2)):
-        steady = float(np.max(np.abs(np.diff(means[i:i + 3])))) < 0.014
-        if not steady:
-            continue
-        if i == 0:
-            return 2, 0  # Normal opening: retain historical frame-3 calibration.
-        reference = float(np.mean(means[i:i + 3]))
-        if float(np.min(means[:i])) - reference > 0.035:
+    source_y = source @ weights
+    source_mean = float(source_y.mean())
+    std_source = float(source_y.std())
+    corrs = []
+    for frame in frames:
+        y = frame @ weights
+        if min(std_source, float(y.std())) < 0.01:
+            corrs.append(0.0)
+        else:
+            corrs.append(float(np.corrcoef(source_y.ravel(), y.ravel())[0, 1]))
+    corrs = np.asarray(corrs)
+    print(
+        f"[H3 EXTEND FLASH] v9 source={source_mean:.4f} "
+        f"first_10={means[:10].round(4).tolist()} "
+        f"correlation={corrs[:10].round(3).tolist()}", flush=True,
+    )
+    if (float(np.max(np.abs(np.diff(means[:3])))) < 0.014
+            and abs(float(means[:3].mean()) - source_mean) < 0.025
+            and corrs[0] >= 0.92):
+        return 2, 0
+
+    for i in range(1, min(10, len(means) - 2)):
+        window = means[i:i + 3]
+        steady = float(np.max(np.abs(np.diff(window)))) < 0.014
+        close_to_source = abs(float(window.mean()) - source_mean) < 0.065
+        similar_scene = bool(corrs[i] >= (0.92 if i <= 2 else 0.78))
+        significant_flash = float(means[0] - window.mean()) > 0.030
+        if steady and close_to_source and similar_scene and significant_flash:
             return i, i
     return None, None
-
 
 def _match_extension_boundary(original_path, segment_path, temp_dir):
     # Only correct a visually corresponding boundary; never grade source video.
@@ -1183,15 +1212,21 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
     except Exception as exc:
         print(f"[H3 EXTEND FRAME] raw scan failed: {exc}", flush=True)
     frames = _probe_extension_start_rgb(segment_path)
-    anchor, flash_count = _find_extension_stable_anchor(frames)
-    if anchor is None:
-        print("[H3 EXTEND COLOR] v8 unstable opening; RGB matching skipped to protect full video", flush=True)
+    original = _read_extension_source_last_rgb(original_path)
+    anchor, flash_count = _find_extension_stable_anchor(frames, original)
+    # Do not recolor the entire five-second clip from a late, moving frame.
+    # This preserves the v5 global RGB matching only when a trustworthy early
+    # anchor exists; the opt-in repair handles the flash itself separately.
+    if anchor is None or anchor > 2:
+        print(
+            f"[H3 EXTEND COLOR] v9 global RGB skipped: "
+            f"anchor={anchor} flash_prefix={flash_count}; preserving generated colors",
+            flush=True,
+        )
         return segment_path
-    original = _read_boundary_rgb(original_path, at_end=True)
     generated = frames[anchor]
     print(
-        f"[H3 EXTEND COLOR] v8 stable anchor={anchor} flash_prefix={flash_count} "
-        f"first_luma={((frames @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).mean(axis=(1, 2)))[:8].round(4).tolist()}",
+        f"[H3 EXTEND COLOR] v9 stable anchor={anchor} flash_prefix={flash_count}",
         flush=True,
     )
     gray_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -1250,60 +1285,50 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
 
 
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
-    """v8: preserve v5 motion; use per-frame RGB tone curves on an isolated flash prefix."""
+    """v9: v5-preserving Y-only repair of a detected flash prefix.
+
+    Keep every generated frame and its chroma (face/skin/clothing colors);
+    change only luma before the first recovered anchor. No frame cloning,
+    no multi-second fade, no correction to the rest of the segment.
+    """
     import numpy as np
     if original_path is None:
         return segment_path
-
     frames = _probe_extension_start_rgb(segment_path)
-    anchor, prefix = _find_extension_stable_anchor(frames)
+    source = _read_extension_source_last_rgb(original_path)
+    anchor, prefix = _find_extension_stable_anchor(frames, source)
     if anchor is None or not prefix:
-        print(f"[H3 EXTEND FLASH] {label}: v8 no reliable flash prefix; unchanged", flush=True)
+        print(f"[H3 EXTEND FLASH] {label}: v9 no reliable flash; preserving video", flush=True)
         return segment_path
 
-    source = _read_boundary_rgb(original_path, at_end=True)
     weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    source_y = source @ weights
-    anchor_y = frames[anchor] @ weights
-    corr = float(np.corrcoef(source_y.ravel(), anchor_y.ravel())[0, 1])
-    delta = float(anchor_y.mean() - source_y.mean())
-    print(
-        f"[H3 EXTEND FLASH] {label}: v8 stable_anchor={anchor} prefix={prefix} "
-        f"source={source_y.mean():.4f} stable={anchor_y.mean():.4f} "
-        f"delta={delta:.4f} corr={corr:.4f}",
-        flush=True,
-    )
-    if not np.isfinite(corr) or corr < 0.85 or abs(delta) > 0.050:
-        print(f"[H3 EXTEND FLASH] {label}: v8 boundary not stable; unchanged", flush=True)
+    means = (frames @ weights).mean(axis=(1, 2))
+    source_mean = float((source @ weights).mean())
+    stable_mean = float(means[anchor:anchor + 2].mean())
+    if abs(stable_mean - source_mean) > 0.065:
+        print(f"[H3 EXTEND FLASH] {label}: v9 recovered scene differs; unchanged", flush=True)
         return segment_path
 
-    # Target color from the source boundary and the actual recovered extension.
-    # Never copy a frame or change the motion of any generated frame.
-    target = np.concatenate(
-        (source.reshape(-1, 3), frames[anchor:anchor + 2].reshape(-1, 3)), axis=0
-    )
-    quantiles = [5, 15, 30, 45, 60, 75, 90, 97]
-    filters = ["format=rgb24"]
-    for frame_idx in range(prefix):
-        curve_parts = []
-        for channel, color in enumerate("rgb"):
-            incoming = np.percentile(frames[frame_idx, :, :, channel], quantiles)
-            expected = np.percentile(target[:, channel], quantiles)
-            points = [(0.0, 0.0)]
-            for x, y in zip(incoming, expected):
-                x, y = float(x), float(y)
-                if x < 0.005 or x > 0.995 or x - points[-1][0] < 0.005:
-                    continue
-                points.append((x, y))
-            points.append((1.0, 1.0))
-            coords = " ".join(f"{x:.5f}/{y:.5f}" for x, y in points)
-            curve_parts.append(f"{color}='{coords}'")
-        filters.append(
-            f"curves={':'.join(curve_parts)}:interp=pchip:"
-            f"enable='eq(n\\,{frame_idx})'"
-        )
-    filters.append("format=yuv420p")
+    offsets = []
+    # Smoothly connect source exposure to the already recovered extension
+    # WITHOUT changing any frame at or after the detected recovery.
+    for i in range(prefix):
+        progress = float(i) / prefix
+        target = source_mean * (1.0 - progress) + stable_mean * progress
+        # Studio videos use limited-range YUV420p: 219 luma codes per unit.
+        y_offset = int(round((target - float(means[i])) * 219))
+        if abs(y_offset) > 48:
+            print(
+                f"[H3 EXTEND FLASH] {label}: v9 unsafe Y adjustment {y_offset}; unchanged",
+                flush=True,
+            )
+            return segment_path
+        offsets.append(y_offset)
 
+    filters = [
+        f"lutyuv=y='clip(val+{offset},16,235)':enable='eq(n\\,{i})'"
+        for i, offset in enumerate(offsets)
+    ]
     result = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
     subprocess.run(
         ["ffmpeg", "-y", "-i", segment_path, "-map", "0:v:0", "-map", "0:a:0?",
@@ -1313,8 +1338,9 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         check=True, capture_output=True, text=True, timeout=300,
     )
     print(
-        f"[H3 EXTEND FLASH] {label}: v8 corrected first {prefix} frames only; "
-        f"frames >= {prefix} retain their original generated motion and color",
+        f"[H3 EXTEND FLASH] {label}: v9 Y-only repair applied "
+        f"frames={prefix} offsets={offsets} source={source_mean:.4f} "
+        f"recovered={stable_mean:.4f}; later frames and chroma unchanged",
         flush=True,
     )
     _log_extension_start_luma(result, f"{label} post_repair")
