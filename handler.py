@@ -1202,6 +1202,54 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
     return corrected_path
 
 
+def _repair_extension_start_flash(segment_path, temp_dir, label):
+    """Replace only a confirmed two-frame luminance spike, preserving A/V duration."""
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", segment_path, "-map", "0:v:0",
+        "-frames:v", "8", "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    size = 160 * 90 * 3
+    if len(raw) < 6 * size or len(raw) % size:
+        print(f"[H3 EXTEND FLASH] {label}: insufficient frames; skipped", flush=True)
+        return segment_path
+    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
+    luma = pixels @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = luma.mean(axis=(1, 2))
+    baseline = float(np.median(means[2:7]))
+    excess = means[:2] - baseline
+    tail = float(np.max(np.abs(means[2:7] - baseline)))
+    # Require two consecutive bright frames and a stable following baseline.
+    # Conservative thresholds avoid altering ordinary motion and exposure shifts.
+    detected = bool(np.all(excess > 0.075) and tail < 0.035)
+    print(
+        f"[H3 EXTEND FLASH] {label}: first={means[:2].round(4).tolist()} "
+        f"baseline={baseline:.4f} tail_spread={tail:.4f} detected={detected}",
+        flush=True,
+    )
+    if not detected:
+        return segment_path
+    repaired_path = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
+    # Keep frame count and audio timing unchanged: replace first two video frames
+    # with clones of frame 3, rather than deleting time from the video.
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", segment_path,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "fps=24,trim=start_frame=2,setpts=PTS-STARTPTS,"
+                   "tpad=start=2:start_mode=clone",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-movflags", "+faststart", repaired_path,
+        ],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print(f"[H3 EXTEND FLASH] {label}: replaced first 2 frames", flush=True)
+    return repaired_path
+
+
 def _concat_extended_video(original_path, segment_path, output_path):
     # Normalize both streams inside a single filter graph. This avoids
     # separately re-encoding the generated segment before the final MP4.
@@ -1545,6 +1593,11 @@ def h3_extend_generate(job_input):
                 )
             except Exception as exc:
                 print(f"[H3 EXTEND COLOR] Analysis failed, preserving unmodified segment: {exc}", flush=True)
+        if job_input.get("extension_flash_repair", False):
+            try:
+                segment_path = _repair_extension_start_flash(segment_path, temp_dir, "corrected")
+            except Exception as exc:
+                print(f"[H3 EXTEND FLASH] corrected repair failed: {exc}", flush=True)
         _concat_extended_video(original_path, segment_path, combined_path)
         print(f"[H3 EXTEND] combined output: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
@@ -1558,9 +1611,15 @@ def h3_extend_generate(job_input):
         # No second model inference, no change to default Studio behavior.
         if job_input.get("extension_compare_rgb", False):
             raw_combined_path = os.path.join(temp_dir, "extended_no_rgb.mp4")
-            _concat_extended_video(original_path, os.path.join(
+            raw_segment_path = os.path.join(
                 COMFYUI_DIR, "output", segment.get("subfolder", ""), segment["filename"]
-            ), raw_combined_path)
+            )
+            if job_input.get("extension_flash_repair", False):
+                try:
+                    raw_segment_path = _repair_extension_start_flash(raw_segment_path, temp_dir, "raw")
+                except Exception as exc:
+                    print(f"[H3 EXTEND FLASH] raw repair failed: {exc}", flush=True)
+            _concat_extended_video(original_path, raw_segment_path, raw_combined_path)
             with open(raw_combined_path, "rb") as raw_file:
                 outputs.append({
                     "type": "videos",
