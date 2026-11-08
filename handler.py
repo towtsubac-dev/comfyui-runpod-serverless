@@ -1336,16 +1336,98 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
     return corrected_path
 
 
+def _v11_fade_flash_plan(frames, source):
+    """Detect a strongly source-correlated, 4-10 frame fading exposure flash.
+
+    This is deliberately a narrow fallback to v10: normal motion or a new
+    lighting condition must not be flattened simply to match mean luminance.
+    """
+    import numpy as np
+    if len(frames) < 11:
+        return None
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference = source @ weights
+    source_mean = float(reference.mean())
+    source_std = float(reference.std())
+    if source_std < 0.01:
+        return None
+
+    corrs = []
+    for frame in frames[:3]:
+        current = frame @ weights
+        if float(current.std()) < 0.01:
+            return None
+        corrs.append(float(np.corrcoef(reference.ravel(), current.ravel())[0, 1]))
+    if not (
+        float(means[0] - source_mean) >= 0.07
+        and corrs[0] >= 0.955
+        and corrs[1] >= 0.90
+        and corrs[2] >= 0.74
+    ):
+        return None
+
+    early_drops = np.diff(means[:5])
+    if not (
+        bool(np.all(early_drops < 0.012))
+        and float(means[0] - means[2]) > 0.035
+        and float(means[0] - means[4]) > 0.065
+        and int(np.count_nonzero(early_drops < -0.006)) >= 3
+        and float(np.max(early_drops)) < 0.009
+    ):
+        return None
+
+    anchor = None
+    for i in range(4, min(11, len(means) - 2)):
+        window = means[i:i + 3]
+        if (
+            float(np.ptp(window)) > 0.018
+            or abs(float(np.median(window) - source_mean)) > 0.035
+            or float(means[i] - source_mean) > 0.021
+            or float(means[i] - means[0]) > -0.065
+            or bool(np.any(means[1:i] < means[i] - 0.028))
+            or bool(np.any(np.diff(means[:i + 1]) > 0.014))
+        ):
+            continue
+        anchor = i
+        break
+    if anchor is None:
+        return None
+
+    offsets = []
+    for i in range(anchor):
+        target = source_mean + (float(means[anchor]) - source_mean) * i / anchor
+        offset = int(round((target - float(means[i])) * 219))
+        if abs(offset) > 40:
+            return None
+        offsets.append(offset)
+    print(
+        f"[H3 EXTEND FLASH] v11 gradual fade confirmed: "
+        f"source={source_mean:.4f} first_12={means[:12].round(4).tolist()} "
+        f"first_corr={[round(c, 3) for c in corrs]} "
+        f"anchor={anchor} offsets={offsets}",
+        flush=True,
+    )
+    return {
+        "start": 0, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
-    """v10: change only the Y plane before exposure recovery; preserve v5 motion."""
+    """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
     if original_path is None:
         return segment_path
     frames = _probe_extension_start_rgb(segment_path, count=18)
     source = _read_extension_source_last_rgb(original_path)
     plan = _v10_flash_plan(frames, source, label)
+    version = "v10"
+    if plan is None:
+        plan = _v11_fade_flash_plan(frames, source)
+        version = "v11"
     if plan is None:
         print(
-            f"[H3 EXTEND FLASH] {label}: v10 no confirmed exposure flash; unchanged",
+            f"[H3 EXTEND FLASH] {label}: v10/v11 no confirmed exposure flash; unchanged",
             flush=True,
         )
         return segment_path
@@ -1363,7 +1445,7 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         check=True, capture_output=True, text=True, timeout=300,
     )
     print(
-        f"[H3 EXTEND FLASH] {label}: v10 Y-only repair applied "
+        f"[H3 EXTEND FLASH] {label}: {version} Y-only repair applied "
         f"frames={start}..{anchor-1} offsets={offsets} "
         f"source={plan['source_mean']:.4f} recovery={plan['recovery_mean']:.4f}; "
         f"remaining motion and chroma unchanged",
