@@ -1168,41 +1168,100 @@ def _read_extension_source_last_rgb(path):
     return np.frombuffer(raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
 
 
-def _find_extension_stable_anchor(frames, source):
-    """Find recovered exposure; an overexposed plateau is NOT a stable anchor."""
+def _v10_flash_plan(frames, source, label):
+    """Locate an exposure-only opening glitch using the actual source end frame."""
     import numpy as np
     weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
     means = (frames @ weights).mean(axis=(1, 2))
-    source_y = source @ weights
-    source_mean = float(source_y.mean())
-    std_source = float(source_y.std())
+    reference_y = source @ weights
+    source_mean = float(reference_y.mean())
+    reference_std = float(reference_y.std())
     corrs = []
     for frame in frames:
-        y = frame @ weights
-        if min(std_source, float(y.std())) < 0.01:
+        current_y = frame @ weights
+        if min(reference_std, float(current_y.std())) < 0.01:
             corrs.append(0.0)
         else:
-            corrs.append(float(np.corrcoef(source_y.ravel(), y.ravel())[0, 1]))
-    corrs = np.asarray(corrs)
+            corrs.append(float(np.corrcoef(reference_y.ravel(), current_y.ravel())[0, 1]))
+    corrs = np.asarray(corrs, dtype=np.float32)
+    peak = int(np.argmax(means[:min(6, len(means))]))
+    first_excess = float(means[0] - source_mean)
+    peak_excess = float(means[peak] - source_mean)
     print(
-        f"[H3 EXTEND FLASH] v9 source={source_mean:.4f} "
-        f"first_10={means[:10].round(4).tolist()} "
-        f"correlation={corrs[:10].round(3).tolist()}", flush=True,
+        f"[H3 EXTEND FLASH] {label}: v10 scan source={source_mean:.4f} "
+        f"first_12={means[:12].round(4).tolist()} "
+        f"corr={corrs[:12].round(3).tolist()}", flush=True,
     )
-    if (float(np.max(np.abs(np.diff(means[:3])))) < 0.014
-            and abs(float(means[:3].mean()) - source_mean) < 0.025
-            and corrs[0] >= 0.92):
-        return 2, 0
+    if float(corrs[0]) < 0.92:
+        return None
+    residual = False
+    if first_excess >= 0.032:
+        start = 0
+    elif (abs(first_excess) < 0.020 and peak in (1, 2, 3, 4)
+          and peak_excess > 0.032
+          and bool(np.all(corrs[:peak + 1] > 0.93))):
+        start, residual = 1, True
+    else:
+        return None
 
-    for i in range(1, min(10, len(means) - 2)):
+    anchor = None
+    # A bright three-frame plateau may still be part of a fading flash.
+    # Only accept a recovered window at most 0.014 brighter than the source.
+    # A slightly darker window is allowed for natural movement / darkening.
+    for i in range(max(start + 1, peak + 1 if residual else 1),
+                   min(11, len(means) - 2)):
         window = means[i:i + 3]
-        steady = float(np.max(np.abs(np.diff(window)))) < 0.014
-        close_to_source = abs(float(window.mean()) - source_mean) < 0.065
-        similar_scene = bool(corrs[i] >= (0.92 if i <= 2 else 0.78))
-        significant_flash = float(means[0] - window.mean()) > 0.030
-        if steady and close_to_source and similar_scene and significant_flash:
-            return i, i
-    return None, None
+        window_delta = float(window.mean() - source_mean)
+        if (float(np.max(np.abs(np.diff(window)))) >= 0.014
+                or window_delta > 0.014 or window_delta < -0.035
+                or float(corrs[i]) < 0.72):
+            continue
+        if max(float(means[k] - window.mean())
+               for k in range(start, min(i, 7))) < 0.030:
+            continue
+        anchor = i
+        break
+    # v7-style isolated 1-frame flash followed immediately by a normal frame.
+    if anchor is None and start == 0 and len(means) > 2:
+        if (abs(float(means[1] - source_mean)) < 0.025
+                and abs(float(means[2] - source_mean)) < 0.025
+                and abs(float(means[1] - means[2])) < 0.018
+                and float(corrs[1]) > 0.92
+                and float(means[0] - means[1]) > 0.030):
+            anchor = 1
+    if anchor is None:
+        return None
+
+    offsets = []
+    # TV-range YUV420p uses 219 luma codes per unit; do not touch U/V chroma.
+    # Interpolate *exposure* only; never duplicate frames or change motion.
+    for frame_i in range(start, anchor):
+        fraction = (frame_i - start) / (anchor - start)
+        target = source_mean * (1.0 - fraction) + float(means[anchor]) * fraction
+        y_offset = int(round((target - float(means[frame_i])) * 219))
+        if abs(y_offset) > 48:
+            return None
+        offsets.append(y_offset)
+    return {
+        "start": start, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
+def _v10_rgb_safe(frames):
+    """Allow legacy v5 RGB matching only for a brief, recovered two-frame flash."""
+    import numpy as np
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    if len(means) < 10:
+        return False
+    baseline = float(np.median(means[2:5]))
+    later = float(np.median(means[6:9]))
+    return bool(
+        float(means[:2].mean() - baseline) > 0.035
+        and abs(float(means[2] - np.median(means[3:6]))) < 0.015
+        and abs(baseline - later) < 0.018
+    )
 
 def _match_extension_boundary(original_path, segment_path, temp_dir):
     # Only correct a visually corresponding boundary; never grade source video.
@@ -1211,24 +1270,17 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
         _log_extension_start_luma(segment_path, "raw")
     except Exception as exc:
         print(f"[H3 EXTEND FRAME] raw scan failed: {exc}", flush=True)
-    frames = _probe_extension_start_rgb(segment_path)
+    frames = _probe_extension_start_rgb(segment_path, count=14)
     original = _read_extension_source_last_rgb(original_path)
-    anchor, flash_count = _find_extension_stable_anchor(frames, original)
-    # Do not recolor the entire five-second clip from a late, moving frame.
-    # This preserves the v5 global RGB matching only when a trustworthy early
-    # anchor exists; the opt-in repair handles the flash itself separately.
-    if anchor is None or anchor > 2:
+    if not _v10_rgb_safe(frames):
         print(
-            f"[H3 EXTEND COLOR] v9 global RGB skipped: "
-            f"anchor={anchor} flash_prefix={flash_count}; preserving generated colors",
+            "[H3 EXTEND COLOR] v10 global RGB skipped: "
+            "not a recovered v5-like two-frame flash; preserving generated color",
             flush=True,
         )
         return segment_path
-    generated = frames[anchor]
-    print(
-        f"[H3 EXTEND COLOR] v9 stable anchor={anchor} flash_prefix={flash_count}",
-        flush=True,
-    )
+    generated = frames[2]
+    print("[H3 EXTEND COLOR] v10 v5-like RGB anchor=2", flush=True)
     gray_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
     orig_luma = original @ gray_weights
     gen_luma = generated @ gray_weights
@@ -1285,49 +1337,22 @@ def _match_extension_boundary(original_path, segment_path, temp_dir):
 
 
 def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
-    """v9: v5-preserving Y-only repair of a detected flash prefix.
-
-    Keep every generated frame and its chroma (face/skin/clothing colors);
-    change only luma before the first recovered anchor. No frame cloning,
-    no multi-second fade, no correction to the rest of the segment.
-    """
-    import numpy as np
+    """v10: change only the Y plane before exposure recovery; preserve v5 motion."""
     if original_path is None:
         return segment_path
-    frames = _probe_extension_start_rgb(segment_path)
+    frames = _probe_extension_start_rgb(segment_path, count=18)
     source = _read_extension_source_last_rgb(original_path)
-    anchor, prefix = _find_extension_stable_anchor(frames, source)
-    if anchor is None or not prefix:
-        print(f"[H3 EXTEND FLASH] {label}: v9 no reliable flash; preserving video", flush=True)
+    plan = _v10_flash_plan(frames, source, label)
+    if plan is None:
+        print(
+            f"[H3 EXTEND FLASH] {label}: v10 no confirmed exposure flash; unchanged",
+            flush=True,
+        )
         return segment_path
-
-    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    means = (frames @ weights).mean(axis=(1, 2))
-    source_mean = float((source @ weights).mean())
-    stable_mean = float(means[anchor:anchor + 2].mean())
-    if abs(stable_mean - source_mean) > 0.065:
-        print(f"[H3 EXTEND FLASH] {label}: v9 recovered scene differs; unchanged", flush=True)
-        return segment_path
-
-    offsets = []
-    # Smoothly connect source exposure to the already recovered extension
-    # WITHOUT changing any frame at or after the detected recovery.
-    for i in range(prefix):
-        progress = float(i) / prefix
-        target = source_mean * (1.0 - progress) + stable_mean * progress
-        # Studio videos use limited-range YUV420p: 219 luma codes per unit.
-        y_offset = int(round((target - float(means[i])) * 219))
-        if abs(y_offset) > 48:
-            print(
-                f"[H3 EXTEND FLASH] {label}: v9 unsafe Y adjustment {y_offset}; unchanged",
-                flush=True,
-            )
-            return segment_path
-        offsets.append(y_offset)
-
+    start, anchor, offsets = plan["start"], plan["anchor"], plan["offsets"]
     filters = [
         f"lutyuv=y='clip(val+{offset},16,235)':enable='eq(n\\,{i})'"
-        for i, offset in enumerate(offsets)
+        for i, offset in enumerate(offsets, start=start)
     ]
     result = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
     subprocess.run(
@@ -1338,9 +1363,10 @@ def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=N
         check=True, capture_output=True, text=True, timeout=300,
     )
     print(
-        f"[H3 EXTEND FLASH] {label}: v9 Y-only repair applied "
-        f"frames={prefix} offsets={offsets} source={source_mean:.4f} "
-        f"recovered={stable_mean:.4f}; later frames and chroma unchanged",
+        f"[H3 EXTEND FLASH] {label}: v10 Y-only repair applied "
+        f"frames={start}..{anchor-1} offsets={offsets} "
+        f"source={plan['source_mean']:.4f} recovery={plan['recovery_mean']:.4f}; "
+        f"remaining motion and chroma unchanged",
         flush=True,
     )
     _log_extension_start_luma(result, f"{label} post_repair")
