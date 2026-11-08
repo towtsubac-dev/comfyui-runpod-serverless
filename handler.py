@@ -1749,6 +1749,43 @@ def h3_extend_generate(job_input):
                     "data": base64.b64encode(raw_file.read()).decode("utf-8"),
                 })
             print("[H3 EXTEND COLOR] A/B comparison: RGB-corrected and uncorrected outputs from one generation", flush=True)
+
+        # RunPod rejects oversized job-done JSON with HTTP 400 *after* inference
+        # succeeds. Preserve video quality: prefer the corrected output rather
+        # than recompressing both videos, and keep a small margin below 20 MB.
+        MAX_RUNPOD_INLINE_RESULT_BYTES = 19_500_000
+        output_base64_bytes = sum(len(item["data"]) for item in outputs)
+        print(
+            f"[H3 EXTEND RETURN] files={len(outputs)} "
+            f"mp4_bytes={[len(item['data']) * 3 // 4 for item in outputs]} "
+            f"base64_bytes={output_base64_bytes} "
+            f"safe_limit={MAX_RUNPOD_INLINE_RESULT_BYTES}",
+            flush=True,
+        )
+        comparison_omitted = False
+        if len(outputs) > 1 and output_base64_bytes + 4096 > MAX_RUNPOD_INLINE_RESULT_BYTES:
+            comparison_omitted = True
+            print(
+                "[H3 EXTEND RETURN] RGB A/B pair exceeds RunPod inline safety "
+                "limit. Returning only RGB-corrected video without recompression; "
+                "RGB-uncorrected comparison file omitted.",
+                flush=True,
+            )
+            outputs = outputs[:1]
+            output_base64_bytes = len(outputs[0]["data"])
+        if output_base64_bytes + 4096 > MAX_RUNPOD_INLINE_RESULT_BYTES:
+            print(
+                "[H3 EXTEND RETURN] Even single output exceeds inline safety "
+                "limit. External R2/S3 output is required for this size.",
+                flush=True,
+            )
+            return {
+                "status": "error",
+                "error": "Extended MP4 exceeds the RunPod inline return limit. "
+                         "Use external R2/S3 output for larger videos.",
+                "error_type": "OutputTooLarge",
+                "output_base64_bytes": output_base64_bytes,
+            }
         return {
             "status": "ok",
             "prompt_id": prompt_id,
@@ -1756,6 +1793,7 @@ def h3_extend_generate(job_input):
             "extension_frames": workflow["7"]["inputs"]["length"],
             "original_duration_seconds": round(info["duration"], 3),
             "outputs": outputs,
+            "comparison_omitted_due_to_size": comparison_omitted,
         }
     finally:
         for path in (input_path,):
