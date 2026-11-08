@@ -747,6 +747,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "ComfyUI is running",
+        "h3_extend_revision": "v11-gradual-fade-preview",
         "system_stats": stats,
     }
 
@@ -1101,40 +1102,400 @@ def _normalize_video_for_concat(source, destination, width, height):
     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
 
 
-def _concat_extended_video(original_path, segment_path, output_path):
-    info = _probe_video(original_path)
-    work_dir = os.path.dirname(output_path)
-    normalized_original = os.path.join(work_dir, "normalized_original.mp4")
-    normalized_segment = os.path.join(work_dir, "normalized_segment.mp4")
-    _normalize_video_for_concat(
-        original_path, normalized_original, info["width"], info["height"]
+def _read_boundary_rgb(path, at_end):
+    import numpy as np
+    info = _probe_video(path)
+    timestamp = max(0.0, info["duration"] - 0.12) if at_end else 0.08
+    cmd = [
+        "ffmpeg", "-v", "error", "-ss", str(timestamp), "-i", path,
+        "-frames:v", "1", "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    if len(raw) != 160 * 90 * 3:
+        raise ValueError("Unable to decode boundary RGB frame")
+    return np.frombuffer(raw, dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+
+
+def _log_extension_start_luma(path, label, count=8):
+    # Diagnostic only: inspect every decoded frame in the first ~0.33 seconds.
+    # No changes to output video, audio, or existing RGB matching.
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path,
+        "-map", "0:v:0", "-frames:v", str(count),
+        "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    frame_size = 160 * 90 * 3
+    frames = len(raw) // frame_size
+    if frames == 0 or len(raw) % frame_size:
+        raise ValueError("Unable to decode extension-start frames")
+    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(frames, 90, 160, 3).astype(np.float32) / 255.0
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luma = pixels @ weights
+    means = np.round(luma.mean(axis=(1, 2)), 4).tolist()
+    print(f"[H3 EXTEND FRAME] {label} first_{frames}_luma={means}", flush=True)
+
+
+def _probe_extension_start_rgb(path, count=12):
+    """Decode the opening frames once so calibration never samples a flash by timestamp."""
+    import numpy as np
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+        "-frames:v", str(count), "-vf", "scale=160:90,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ]
+    raw = subprocess.run(cmd, check=True, capture_output=True, timeout=60).stdout
+    size = 160 * 90 * 3
+    if len(raw) < 6 * size or len(raw) % size:
+        raise ValueError("Insufficient extension frames for seam analysis")
+    return np.frombuffer(raw, dtype=np.uint8).reshape(-1, 90, 160, 3).astype(np.float32) / 255.0
+
+
+def _read_extension_source_last_rgb(path):
+    """Read the final decoded source frame, not a frame at an approximate timestamp."""
+    import numpy as np
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-map", "0:v:0",
+         "-vf", "scale=160:90,format=rgb24", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "pipe:1"],
+        check=True, capture_output=True, timeout=180,
+    ).stdout
+    size = 160 * 90 * 3
+    if len(raw) < size or len(raw) % size:
+        raise ValueError("Cannot inspect final source frame")
+    return np.frombuffer(raw[-size:], dtype=np.uint8).reshape(90, 160, 3).astype(np.float32) / 255.0
+
+
+def _v10_flash_plan(frames, source, label):
+    """Locate an exposure-only opening glitch using the actual source end frame."""
+    import numpy as np
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference_y = source @ weights
+    source_mean = float(reference_y.mean())
+    reference_std = float(reference_y.std())
+    corrs = []
+    for frame in frames:
+        current_y = frame @ weights
+        if min(reference_std, float(current_y.std())) < 0.01:
+            corrs.append(0.0)
+        else:
+            corrs.append(float(np.corrcoef(reference_y.ravel(), current_y.ravel())[0, 1]))
+    corrs = np.asarray(corrs, dtype=np.float32)
+    peak = int(np.argmax(means[:min(6, len(means))]))
+    first_excess = float(means[0] - source_mean)
+    peak_excess = float(means[peak] - source_mean)
+    print(
+        f"[H3 EXTEND FLASH] {label}: v10 scan source={source_mean:.4f} "
+        f"first_12={means[:12].round(4).tolist()} "
+        f"corr={corrs[:12].round(3).tolist()}", flush=True,
     )
-    _normalize_video_for_concat(
-        segment_path, normalized_segment, info["width"], info["height"]
+    if float(corrs[0]) < 0.92:
+        return None
+    residual = False
+    if first_excess >= 0.032:
+        start = 0
+    elif (abs(first_excess) < 0.020 and peak in (1, 2, 3, 4)
+          and peak_excess > 0.032
+          and bool(np.all(corrs[:peak + 1] > 0.93))):
+        start, residual = 1, True
+    else:
+        return None
+
+    anchor = None
+    # A bright three-frame plateau may still be part of a fading flash.
+    # Only accept a recovered window at most 0.014 brighter than the source.
+    # A slightly darker window is allowed for natural movement / darkening.
+    for i in range(max(start + 1, peak + 1 if residual else 1),
+                   min(11, len(means) - 2)):
+        window = means[i:i + 3]
+        window_delta = float(window.mean() - source_mean)
+        if (float(np.max(np.abs(np.diff(window)))) >= 0.014
+                or window_delta > 0.014 or window_delta < -0.035
+                or float(corrs[i]) < 0.72):
+            continue
+        if max(float(means[k] - window.mean())
+               for k in range(start, min(i, 7))) < 0.030:
+            continue
+        anchor = i
+        break
+    # v7-style isolated 1-frame flash followed immediately by a normal frame.
+    if anchor is None and start == 0 and len(means) > 2:
+        if (abs(float(means[1] - source_mean)) < 0.025
+                and abs(float(means[2] - source_mean)) < 0.025
+                and abs(float(means[1] - means[2])) < 0.018
+                and float(corrs[1]) > 0.92
+                and float(means[0] - means[1]) > 0.030):
+            anchor = 1
+    if anchor is None:
+        return None
+
+    offsets = []
+    # TV-range YUV420p uses 219 luma codes per unit; do not touch U/V chroma.
+    # Interpolate *exposure* only; never duplicate frames or change motion.
+    for frame_i in range(start, anchor):
+        fraction = (frame_i - start) / (anchor - start)
+        target = source_mean * (1.0 - fraction) + float(means[anchor]) * fraction
+        y_offset = int(round((target - float(means[frame_i])) * 219))
+        if abs(y_offset) > 48:
+            return None
+        offsets.append(y_offset)
+    return {
+        "start": start, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
+def _v10_rgb_safe(frames):
+    """Allow legacy v5 RGB matching only for a brief, recovered two-frame flash."""
+    import numpy as np
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    if len(means) < 10:
+        return False
+    baseline = float(np.median(means[2:5]))
+    later = float(np.median(means[6:9]))
+    return bool(
+        float(means[:2].mean() - baseline) > 0.035
+        and abs(float(means[2] - np.median(means[3:6]))) < 0.015
+        and abs(baseline - later) < 0.018
     )
+
+def _match_extension_boundary(original_path, segment_path, temp_dir):
+    # Only correct a visually corresponding boundary; never grade source video.
+    import numpy as np
+    try:
+        _log_extension_start_luma(segment_path, "raw")
+    except Exception as exc:
+        print(f"[H3 EXTEND FRAME] raw scan failed: {exc}", flush=True)
+    frames = _probe_extension_start_rgb(segment_path, count=14)
+    original = _read_extension_source_last_rgb(original_path)
+    if not _v10_rgb_safe(frames):
+        print(
+            "[H3 EXTEND COLOR] v10 global RGB skipped: "
+            "not a recovered v5-like two-frame flash; preserving generated color",
+            flush=True,
+        )
+        return segment_path
+    generated = frames[2]
+    print("[H3 EXTEND COLOR] v10 v5-like RGB anchor=2", flush=True)
+    gray_weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    orig_luma = original @ gray_weights
+    gen_luma = generated @ gray_weights
+    orig_std, gen_std = float(orig_luma.std()), float(gen_luma.std())
+    corr = float(np.corrcoef(orig_luma.ravel(), gen_luma.ravel())[0, 1]) if min(orig_std, gen_std) > 0.01 else 0.0
+    delta = float(gen_luma.mean() - orig_luma.mean())
+    print(
+        f"[H3 EXTEND COLOR] original_mean={orig_luma.mean():.4f} "
+        f"segment_mean={gen_luma.mean():.4f} delta={delta:.4f} "
+        f"correlation={corr:.4f} original_std={orig_std:.4f} "
+        f"segment_std={gen_std:.4f}", flush=True,
+    )
+    if not np.isfinite(corr) or corr < 0.75:
+        print("[H3 EXTEND COLOR] Skipped: boundary images differ too much", flush=True)
+        return segment_path
+
+    # Match channel black/white levels using robust percentiles. RGB matching
+    # addresses lifted blacks and color casts that a global brightness filter misses.
+    orig_low = np.percentile(original, 10, axis=(0, 1))
+    orig_high = np.percentile(original, 90, axis=(0, 1))
+    gen_low = np.percentile(generated, 10, axis=(0, 1))
+    gen_high = np.percentile(generated, 90, axis=(0, 1))
+    gains = np.clip((orig_high - orig_low) / np.maximum(gen_high - gen_low, 0.05), 0.82, 1.18)
+    offsets = np.clip(orig_low - gains * gen_low, -0.14, 0.14)
+    if float(np.max(np.abs(gains - 1))) < 0.015 and float(np.max(np.abs(offsets))) < 0.012:
+        print("[H3 EXTEND COLOR] Skipped: RGB levels already match", flush=True)
+        return segment_path
+    # lutrgb maps each channel without changing the source or the audio.
+    lut = ":".join(
+        f"{channel}='clip(val*{float(gain):.6f}+{float(offset)*255:.6f},0,255)'"
+        for channel, gain, offset in zip(("r", "g", "b"), gains, offsets)
+    )
+    corrected_path = os.path.join(temp_dir, "color_matched_segment.mp4")
     subprocess.run(
         [
-            "ffmpeg", "-y",
-            "-i", normalized_original,
-            "-i", normalized_segment,
-            "-filter_complex",
-            "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]",
-            "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
-            "-movflags", "+faststart", output_path,
+            "ffmpeg", "-y", "-i", segment_path,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", f"format=rgb24,lutrgb={lut},format=yuv420p",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-movflags", "+faststart", corrected_path,
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=300,
+        check=True, capture_output=True, text=True, timeout=300,
     )
-    for path in (normalized_original, normalized_segment):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    try:
+        _log_extension_start_luma(corrected_path, "corrected")
+    except Exception as exc:
+        print(f"[H3 EXTEND FRAME] corrected scan failed: {exc}", flush=True)
+    print(
+        "[H3 EXTEND COLOR] RGB match applied "
+        f"gain={gains.tolist()} offset={offsets.tolist()}", flush=True,
+    )
+    return corrected_path
+
+
+def _v11_fade_flash_plan(frames, source):
+    """Detect a strongly source-correlated, 4-10 frame fading exposure flash.
+
+    This is deliberately a narrow fallback to v10: normal motion or a new
+    lighting condition must not be flattened simply to match mean luminance.
+    """
+    import numpy as np
+    if len(frames) < 11:
+        return None
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    means = (frames @ weights).mean(axis=(1, 2))
+    reference = source @ weights
+    source_mean = float(reference.mean())
+    source_std = float(reference.std())
+    if source_std < 0.01:
+        return None
+
+    corrs = []
+    for frame in frames[:3]:
+        current = frame @ weights
+        if float(current.std()) < 0.01:
+            return None
+        corrs.append(float(np.corrcoef(reference.ravel(), current.ravel())[0, 1]))
+    if not (
+        float(means[0] - source_mean) >= 0.07
+        and corrs[0] >= 0.955
+        and corrs[1] >= 0.90
+        and corrs[2] >= 0.74
+    ):
+        return None
+
+    early_drops = np.diff(means[:5])
+    if not (
+        bool(np.all(early_drops < 0.012))
+        and float(means[0] - means[2]) > 0.035
+        and float(means[0] - means[4]) > 0.065
+        and int(np.count_nonzero(early_drops < -0.006)) >= 3
+        and float(np.max(early_drops)) < 0.009
+    ):
+        return None
+
+    anchor = None
+    for i in range(4, min(11, len(means) - 2)):
+        window = means[i:i + 3]
+        if (
+            float(np.ptp(window)) > 0.018
+            or abs(float(np.median(window) - source_mean)) > 0.035
+            or float(means[i] - source_mean) > 0.021
+            or float(means[i] - means[0]) > -0.065
+            or bool(np.any(means[1:i] < means[i] - 0.028))
+            or bool(np.any(np.diff(means[:i + 1]) > 0.014))
+        ):
+            continue
+        anchor = i
+        break
+    if anchor is None:
+        return None
+
+    offsets = []
+    for i in range(anchor):
+        target = source_mean + (float(means[anchor]) - source_mean) * i / anchor
+        offset = int(round((target - float(means[i])) * 219))
+        if abs(offset) > 40:
+            return None
+        offsets.append(offset)
+    print(
+        f"[H3 EXTEND FLASH] v11 gradual fade confirmed: "
+        f"source={source_mean:.4f} first_12={means[:12].round(4).tolist()} "
+        f"first_corr={[round(c, 3) for c in corrs]} "
+        f"anchor={anchor} offsets={offsets}",
+        flush=True,
+    )
+    return {
+        "start": 0, "anchor": anchor, "offsets": offsets,
+        "source_mean": source_mean, "recovery_mean": float(means[anchor]),
+    }
+
+
+def _repair_extension_start_flash(segment_path, temp_dir, label, original_path=None):
+    """Adjust only the Y plane before exposure recovery, preserving v5 motion."""
+    if original_path is None:
+        return segment_path
+    frames = _probe_extension_start_rgb(segment_path, count=18)
+    source = _read_extension_source_last_rgb(original_path)
+    plan = _v10_flash_plan(frames, source, label)
+    version = "v10"
+    if plan is None:
+        plan = _v11_fade_flash_plan(frames, source)
+        version = "v11"
+    if plan is None:
+        print(
+            f"[H3 EXTEND FLASH] {label}: v10/v11 no confirmed exposure flash; unchanged",
+            flush=True,
+        )
+        return segment_path
+    start, anchor, offsets = plan["start"], plan["anchor"], plan["offsets"]
+    filters = [
+        f"lutyuv=y='clip(val+{offset},16,235)':enable='eq(n\\,{i})'"
+        for i, offset in enumerate(offsets, start=start)
+    ]
+    result = os.path.join(temp_dir, f"flash_repaired_{label}.mp4")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", segment_path, "-map", "0:v:0", "-map", "0:a:0?",
+         "-vf", ",".join(filters), "-c:v", "libx264", "-preset", "medium",
+         "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+         "-movflags", "+faststart", result],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    print(
+        f"[H3 EXTEND FLASH] {label}: {version} Y-only repair applied "
+        f"frames={start}..{anchor-1} offsets={offsets} "
+        f"source={plan['source_mean']:.4f} recovery={plan['recovery_mean']:.4f}; "
+        f"remaining motion and chroma unchanged",
+        flush=True,
+    )
+    _log_extension_start_luma(result, f"{label} post_repair")
+    return result
+
+def _concat_extended_video(original_path, segment_path, output_path):
+    # Normalize both streams inside a single filter graph. This avoids
+    # separately re-encoding the generated segment before the final MP4.
+    info = _probe_video(original_path)
+    seg_info = _probe_video(segment_path)
+    width, height = info["width"], info["height"]
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "fps=24,setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
+    )
+    cmd = ["ffmpeg", "-y", "-i", original_path, "-i", segment_path]
+    # Add a silence source only when the relevant input has no audio.
+    silence_inputs = {}
+    for idx, stream_info in enumerate((info, seg_info)):
+        if not stream_info["has_audio"]:
+            silence_inputs[idx] = 2 + len(silence_inputs)
+            cmd += ["-f", "lavfi", "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=32000"]
+    filters = [
+        f"[0:v:0]{video_filter}[v0]",
+        f"[1:v:0]{video_filter}[v1]",
+    ]
+    for idx, stream_info in enumerate((info, seg_info)):
+        duration = stream_info["duration"]
+        source = f"{idx}:a:0" if stream_info["has_audio"] else f"{silence_inputs[idx]}:a:0"
+        filters.append(
+            f"[{source}]aresample=32000:async=1:first_pts=0,"
+            "aformat=sample_rates=32000:channel_layouts=stereo,"
+            f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS[a{idx}]"
+        )
+    filters.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]")
+    cmd += [
+        "-filter_complex", ";".join(filters),
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "32000", "-ac", "2",
+        "-movflags", "+faststart", output_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
 
 
 def build_h3_extend_workflow(video_filename, prompt, length, skip_first_frames,
@@ -1332,9 +1693,16 @@ def h3_extend_generate(job_input):
         with open(input_path, "wb") as video_file:
             video_file.write(video_bytes)
 
+        # Keep the uploaded source untouched for final concatenation.
+        # The normalized copy is only for H3 context encoding.
+        original_path = os.path.join(temp_dir, "original_source.mp4")
+        with open(original_path, "wb") as original_file:
+            original_file.write(video_bytes)
+
         # Normalize only the extension input: H3 requires dimensions divisible by
         # 32. Preserve aspect ratio and pad to the nearest compatible dimensions.
         raw_info = _probe_video(input_path)
+        print(f"[H3 EXTEND] original source: {raw_info}", flush=True)
         if raw_info["frames"] < 5:
             raise ValueError("The input video is too short for MiniMax H3 extension.")
 
@@ -1346,17 +1714,23 @@ def h3_extend_generate(job_input):
             f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,"
             "setsar=1,fps=24,format=yuv420p"
         )
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
+        normalize_cmd = ["ffmpeg", "-y", "-i", input_path]
+        if raw_info["has_audio"]:
+            normalize_cmd += ["-map", "0:v:0", "-map", "0:a:0"]
+        else:
+            normalize_cmd += [
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-vf", vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
-                "-shortest", "-movflags", "+faststart", normalized_path,
-            ],
+            ]
+        normalize_cmd += [
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "32000", "-ac", "2",
+            "-shortest", "-movflags", "+faststart", normalized_path,
+        ]
+        subprocess.run(
+            normalize_cmd,
             check=True, capture_output=True, text=True, timeout=300,
         )
         os.replace(normalized_path, input_path)
@@ -1415,21 +1789,94 @@ def h3_extend_generate(job_input):
             raise RuntimeError(f"Generated extension segment was not found: {segment_path}")
 
         combined_path = os.path.join(temp_dir, "extended_video.mp4")
-        _concat_extended_video(input_path, segment_path, combined_path)
+        print(f"[H3 EXTEND] generated segment: {_probe_video(segment_path)}", flush=True)
+        # A diagnostic-only opt-out is available for controlled A/B testing.
+        if job_input.get("extension_color_match", True):
+            try:
+                segment_path = _match_extension_boundary(
+                    original_path, segment_path, temp_dir,
+                )
+            except Exception as exc:
+                print(f"[H3 EXTEND COLOR] Analysis failed, preserving unmodified segment: {exc}", flush=True)
+        if job_input.get("extension_flash_repair", False):
+            try:
+                segment_path = _repair_extension_start_flash(segment_path, temp_dir, "corrected", original_path)
+            except Exception as exc:
+                print(f"[H3 EXTEND FLASH] corrected repair failed: {exc}", flush=True)
+        _concat_extended_video(original_path, segment_path, combined_path)
+        print(f"[H3 EXTEND] combined output: {_probe_video(combined_path)}", flush=True)
         with open(combined_path, "rb") as result_file:
             combined_bytes = result_file.read()
+        outputs = [{
+            "type": "videos",
+            "filename": f"MiniMax_H3_Extended_{job_id}.mp4",
+            "data": base64.b64encode(combined_bytes).decode("utf-8"),
+        }]
+        # Optional controlled A/B: both files use the SAME generated H3 segment.
+        # No second model inference, no change to default Studio behavior.
+        if job_input.get("extension_compare_rgb", False):
+            raw_combined_path = os.path.join(temp_dir, "extended_no_rgb.mp4")
+            raw_segment_path = os.path.join(
+                COMFYUI_DIR, "output", segment.get("subfolder", ""), segment["filename"]
+            )
+            if job_input.get("extension_flash_repair", False):
+                try:
+                    raw_segment_path = _repair_extension_start_flash(raw_segment_path, temp_dir, "raw", original_path)
+                except Exception as exc:
+                    print(f"[H3 EXTEND FLASH] raw repair failed: {exc}", flush=True)
+            _concat_extended_video(original_path, raw_segment_path, raw_combined_path)
+            with open(raw_combined_path, "rb") as raw_file:
+                outputs.append({
+                    "type": "videos",
+                    "filename": f"MiniMax_H3_Extended_NO_RGB_{job_id}.mp4",
+                    "data": base64.b64encode(raw_file.read()).decode("utf-8"),
+                })
+            print("[H3 EXTEND COLOR] A/B comparison: RGB-corrected and uncorrected outputs from one generation", flush=True)
 
+        # RunPod rejects oversized job-done JSON with HTTP 400 *after* inference
+        # succeeds. Preserve video quality: prefer the corrected output rather
+        # than recompressing both videos, and keep a small margin below 20 MB.
+        MAX_RUNPOD_INLINE_RESULT_BYTES = 19_500_000
+        output_base64_bytes = sum(len(item["data"]) for item in outputs)
+        print(
+            f"[H3 EXTEND RETURN] files={len(outputs)} "
+            f"mp4_bytes={[len(item['data']) * 3 // 4 for item in outputs]} "
+            f"base64_bytes={output_base64_bytes} "
+            f"safe_limit={MAX_RUNPOD_INLINE_RESULT_BYTES}",
+            flush=True,
+        )
+        comparison_omitted = False
+        if len(outputs) > 1 and output_base64_bytes + 4096 > MAX_RUNPOD_INLINE_RESULT_BYTES:
+            comparison_omitted = True
+            print(
+                "[H3 EXTEND RETURN] RGB A/B pair exceeds RunPod inline safety "
+                "limit. Returning only RGB-corrected video without recompression; "
+                "RGB-uncorrected comparison file omitted.",
+                flush=True,
+            )
+            outputs = outputs[:1]
+            output_base64_bytes = len(outputs[0]["data"])
+        if output_base64_bytes + 4096 > MAX_RUNPOD_INLINE_RESULT_BYTES:
+            print(
+                "[H3 EXTEND RETURN] Even single output exceeds inline safety "
+                "limit. External R2/S3 output is required for this size.",
+                flush=True,
+            )
+            return {
+                "status": "error",
+                "error": "Extended MP4 exceeds the RunPod inline return limit. "
+                         "Use external R2/S3 output for larger videos.",
+                "error_type": "OutputTooLarge",
+                "output_base64_bytes": output_base64_bytes,
+            }
         return {
             "status": "ok",
             "prompt_id": prompt_id,
             "extend_seconds_requested": extend_seconds,
             "extension_frames": workflow["7"]["inputs"]["length"],
             "original_duration_seconds": round(info["duration"], 3),
-            "outputs": [{
-                "type": "videos",
-                "filename": f"MiniMax_H3_Extended_{job_id}.mp4",
-                "data": base64.b64encode(combined_bytes).decode("utf-8"),
-            }],
+            "outputs": outputs,
+            "comparison_omitted_due_to_size": comparison_omitted,
         }
     finally:
         for path in (input_path,):
@@ -1682,6 +2129,11 @@ if __name__ == "__main__":
 
     wait_for_comfyui()
 
+    print(
+        "[H3 EXTEND] revision=v11-gradual-fade-preview "
+        "flash=v10+v11; RunPod inline result guard=19.5MB",
+        flush=True,
+    )
     print(
         "Starting RunPod Serverless handler...",
         flush=True,
