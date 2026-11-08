@@ -747,6 +747,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "ComfyUI is running",
+        "h3_extend_revision": "v11-gradual-fade-preview",
         "system_stats": stats,
     }
 
@@ -2128,6 +2129,11 @@ if __name__ == "__main__":
 
     wait_for_comfyui()
 
+    print(
+        "[H3 EXTEND] revision=v11-gradual-fade-preview "
+        "flash=v10+v11; RunPod inline result guard=19.5MB",
+        flush=True,
+    )
     print(
         "Starting RunPod Serverless handler...",
         flush=True,
