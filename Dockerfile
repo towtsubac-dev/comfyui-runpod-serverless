@@ -160,6 +160,7 @@ hf_hub_download( \
 WORKDIR /workspace
 
 COPY handler.py /workspace/handler.py
+COPY ref2va_handler.py /workspace/ref2va_handler.py
 
 # ---------------------------------------------------------
 # Start
