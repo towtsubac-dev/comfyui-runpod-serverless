@@ -94,7 +94,7 @@ def _decode_image(item):
 
 
 def build_ref2va_workflow(image_filenames, prompt, width=864, height=480,
-                          length=124, steps=20, seed=None, ref_image_size="match"):
+                          length=124, steps=20, seed=None, ref_image_size="match", optional_loras=None):
     if not (MIN_REFS <= len(image_filenames) <= MAX_REFS):
         raise ValueError("Preview requires 2 or 3 reference images.")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -138,6 +138,27 @@ def build_ref2va_workflow(image_filenames, prompt, width=864, height=480,
         node_id = str(20 + index)
         workflow[node_id] = {"class_type": "LoadImage", "inputs": {"image": filename}}
         ref_inputs["ref_images.ref_image_" + str(index)] = [node_id, 0]
+    # Only optional registered Ref2VA-compatible model LoRAs. Never load the
+    # FL2VA Turbo LoRA in the standalone native Ref2VA workflow.
+    selected = optional_loras or []
+    if len(selected) > 5:
+        raise ValueError("At most 5 optional LoRAs are supported.")
+    model_ref = ["2", 0]
+    for index, item in enumerate(selected):
+        strength = float(item["strength"])
+        if not 0.0 <= strength <= 1.5:
+            raise ValueError("MiniMax Ref2VA LoRA strength must be 0–1.5.")
+        node_id = str(30 + index)
+        workflow[node_id] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": model_ref,
+                "lora_name": item["lora_name"],
+                "strength_model": strength,
+            },
+        }
+        model_ref = [node_id, 0]
+    workflow["8"]["inputs"]["model"] = model_ref
     return workflow
 
 
@@ -160,12 +181,10 @@ def ref2va_check(comfy_get, comfy_dir):
 
 
 def generate_ref2va(job_input, upload_image, queue_prompt, wait_for_result,
-                    extract_outputs, download_output, comfy_dir):
+                    extract_outputs, download_output, comfy_dir, resolve_loras=None):
     refs = job_input.get("reference_images")
     if not isinstance(refs, list) or not MIN_REFS <= len(refs) <= MAX_REFS:
         raise ValueError("input.reference_images must contain 2 or 3 images.")
-    if job_input.get("loras") or job_input.get("lora"):
-        raise ValueError("Additional LoRAs are disabled for the initial Ref2VA preview.")
     prompt = job_input.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("Missing input.prompt.")
@@ -176,6 +195,13 @@ def generate_ref2va(job_input, upload_image, queue_prompt, wait_for_result,
     seed = job_input.get("seed")
     seed = int(seed) if seed is not None else None
     ref_image_size = job_input.get("ref_image_size", "match")
+    optional_loras = []
+    if job_input.get("loras") or job_input.get("lora"):
+        if resolve_loras is None:
+            raise ValueError("LoRA resolver is not available.")
+        prompt, optional_loras, _ = resolve_loras(job_input, prompt)
+        if len(optional_loras) > 5:
+            raise ValueError("At most 5 optional LoRAs are supported.")
 
     # Validate all input metadata BEFORE uploading anything.
     if width % 32 or height % 32 or not (384 <= width <= 1536) or not (384 <= height <= 1536):
@@ -192,7 +218,7 @@ def generate_ref2va(job_input, upload_image, queue_prompt, wait_for_result,
             filename = "h3_ref2va_" + uuid.uuid4().hex + "_" + str(index) + ".png"
             actual = upload_image(encoded, filename)
             uploaded.append(actual)
-        workflow = build_ref2va_workflow(uploaded, prompt, width, height, length, steps, seed, ref_image_size)
+        workflow = build_ref2va_workflow(uploaded, prompt, width, height, length, steps, seed, ref_image_size, optional_loras=optional_loras)
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         outputs = []
@@ -206,7 +232,7 @@ def generate_ref2va(job_input, upload_image, queue_prompt, wait_for_result,
         if not outputs:
             raise RuntimeError("Ref2VA finished but no MP4 was saved.")
         return {"status": "ok", "mode": "ref2va", "prompt_id": prompt_id,
-                "reference_image_count": len(uploaded), "outputs": outputs}
+                "reference_image_count": len(uploaded), "lora_count": len(optional_loras), "outputs": outputs}
     finally:
         input_root = os.path.join(comfy_dir, "input")
         for filename in uploaded:
