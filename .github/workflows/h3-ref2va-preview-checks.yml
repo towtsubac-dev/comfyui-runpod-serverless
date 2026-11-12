@@ -1,0 +1,31 @@
+name: MiniMax H3 Ref2VA Preview Validation
+
+on:
+  push:
+    branches:
+      - feature/h3-ref2va-multiref-preview
+    paths:
+      - handler.py
+      - ref2va_handler.py
+      - Dockerfile.ref2va
+      - tests/test_ref2va_preview.py
+      - .github/workflows/h3-ref2va-preview-checks.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pillow requests
+      - name: Compile changed Python files
+        run: python -m py_compile handler.py ref2va_handler.py tests/test_ref2va_preview.py
+      - name: Validate Ref2VA graph and inputs without GPU
+        run: python -m unittest discover -s tests -p test_ref2va_preview.py -v
