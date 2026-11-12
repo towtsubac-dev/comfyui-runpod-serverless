@@ -2040,6 +2040,7 @@ def handler(event):
                 extract_outputs=extract_outputs,
                 download_output=download_output,
                 comfy_dir=COMFYUI_DIR,
+                resolve_loras=resolve_optional_loras,
             )
 
         if action == "h3_generate":
