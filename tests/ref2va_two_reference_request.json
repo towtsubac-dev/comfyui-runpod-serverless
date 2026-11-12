@@ -1,0 +1,20 @@
+{
+  "input": {
+    "action": "h3_ref2va_generate",
+    "reference_images": [
+      {
+        "image_url": "https://YOUR-R2-DOMAIN.example/Picture1.png?SIGNED_PARAMETERS"
+      },
+      {
+        "image_url": "https://YOUR-R2-DOMAIN.example/Picture2.png?SIGNED_PARAMETERS"
+      }
+    ],
+    "prompt": "Use <Picture 1> as the primary identity reference and <Picture 2> as another view of the same adult person. The person stands naturally, smiles gently, and makes a small hand gesture. Preserve the same facial structure, hair, clothing, and body proportions throughout the video. Natural continuous motion, fixed camera, consistent lighting and identity. Soft natural ambient sound. No music.",
+    "width": 864,
+    "height": 480,
+    "length": 124,
+    "steps": 20,
+    "ref_image_size": "match",
+    "seed": 123456
+  }
+}
