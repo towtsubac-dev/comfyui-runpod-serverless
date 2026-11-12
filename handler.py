@@ -2024,6 +2024,24 @@ def handler(event):
         if action == "h3_check":
             return h3_check()
 
+        if action == "h3_ref2va_check":
+            from ref2va_handler import ref2va_check
+            ensure_comfyui()
+            return ref2va_check(comfy_get, COMFYUI_DIR)
+
+        if action == "h3_ref2va_generate":
+            from ref2va_handler import generate_ref2va
+            ensure_comfyui()
+            return generate_ref2va(
+                input_data,
+                upload_image=upload_image,
+                queue_prompt=queue_prompt,
+                wait_for_result=wait_for_result,
+                extract_outputs=extract_outputs,
+                download_output=download_output,
+                comfy_dir=COMFYUI_DIR,
+            )
+
         if action == "h3_generate":
             return h3_generate(
                 input_data
