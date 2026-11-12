@@ -90,8 +90,64 @@ class Ref2vaPreviewTests(unittest.TestCase):
         self.assertEqual(queued[0]["13"]["inputs"]["noise_seed"], 123)
         self.assertEqual(base64.b64decode(result["outputs"][0]["data"]), b"fake-mp4")
 
-    def test_loras_disabled_during_preview(self):
-        with self.assertRaisesRegex(ValueError, "LoRAs"):
+    def test_ordered_registered_loras_are_connected_without_turbo(self):
+        selected = [
+            {"lora_name": "library_first.safetensors", "strength": 0.8},
+            {"lora_name": "library_second.safetensors", "strength": 0.35},
+            {"lora_name": "library_third.safetensors", "strength": 1.1},
+            {"lora_name": "library_fourth.safetensors", "strength": 0.5},
+            {"lora_name": "library_fifth.safetensors", "strength": 0.75},
+        ]
+        wf = build_ref2va_workflow(["front.png", "side.png"], "Scene", seed=123,
+                                    optional_loras=selected)
+        self.assertEqual(wf["30"]["inputs"]["model"], ["2", 0])
+        self.assertEqual(wf["31"]["inputs"]["model"], ["30", 0])
+        self.assertEqual(wf["34"]["inputs"]["model"], ["33", 0])
+        self.assertEqual(wf["8"]["inputs"]["model"], ["34", 0])
+        self.assertEqual(wf["31"]["inputs"]["strength_model"], 0.35)
+        self.assertEqual(wf["34"]["inputs"]["lora_name"], "library_fifth.safetensors")
+        self.assertNotIn("9", wf)  # Never silently activate FL2VA Turbo.
+
+    def test_lora_limit_and_invalid_strength(self):
+        selected = [{"lora_name": f"library_{i}.safetensors", "strength": 1}
+                    for i in range(6)]
+        with self.assertRaisesRegex(ValueError, "5"):
+            build_ref2va_workflow(["a.png", "b.png"], "Scene", optional_loras=selected)
+        with self.assertRaisesRegex(ValueError, "strength"):
+            build_ref2va_workflow(["a.png", "b.png"], "Scene",
+                                   optional_loras=[{"lora_name": "x", "strength": 1.8}])
+
+    def test_generate_resolves_registered_lora_and_applies_to_model(self):
+        im = Image.new("RGB", (256, 256), "pink")
+        blob = io.BytesIO()
+        im.save(blob, "PNG")
+        encoded = base64.b64encode(blob.getvalue()).decode("ascii")
+        queued = []
+        resolver_called = []
+        def resolve(item, prompt):
+            resolver_called.append(item["loras"])
+            return prompt + " soft smile", [
+                {"lora_name": "library_example.safetensors", "strength": 0.8}
+            ], []
+        with tempfile.TemporaryDirectory() as temp:
+            result = generate_ref2va(
+                {"reference_images": [{"image": encoded}, {"image": encoded}],
+                 "prompt": "Scene", "loras": [{"name": "library:test", "strength": 0.8}],
+                 "seed": 123},
+                upload_image=lambda data, name: name,
+                queue_prompt=lambda wf: queued.append(wf) or "prompt-1",
+                wait_for_result=lambda pid, timeout: {"outputs": {}},
+                extract_outputs=lambda record: [{"type": "videos", "filename": "result.mp4"}],
+                download_output=lambda filename, subfolder, file_type: b"mp4",
+                comfy_dir=temp, resolve_loras=resolve,
+            )
+        self.assertEqual(len(resolver_called), 1)
+        self.assertEqual(result["lora_count"], 1)
+        self.assertEqual(queued[0]["30"]["inputs"]["lora_name"], "library_example.safetensors")
+        self.assertEqual(queued[0]["8"]["inputs"]["model"], ["30", 0])
+
+    def test_lora_requires_trusted_resolver(self):
+        with self.assertRaisesRegex(ValueError, "resolver"):
             generate_ref2va({"reference_images": [{}, {}], "prompt": "Test",
                               "loras": [{"name": "foo"}]},
                              None, None, None, None, None, "/tmp")
