@@ -154,12 +154,28 @@ hf_hub_download( \
 )"
 
 # ---------------------------------------------------------
+# Native Ref2VA diffusion model (shared encoder/VAEs; no second copy).
+# This is an experimental all-modes image. 24GB GPU memory eviction and
+# cold-start impact must be tested BEFORE any Production rollout.
+# ---------------------------------------------------------
+
+RUN python -c "\\
+from huggingface_hub import hf_hub_download; \\
+hf_hub_download( \\
+    repo_id='Comfy-Org/MiniMax-H3', \\
+    filename='minimax_h3_ref2va_pruned_w6a8.safetensors', \\
+    subfolder='diffusion_models', \\
+    local_dir='/workspace/ComfyUI/models' \\
+)"
+
+# ---------------------------------------------------------
 # Handler
 # ---------------------------------------------------------
 
 WORKDIR /workspace
 
 COPY handler.py /workspace/handler.py
+COPY ref2va_handler.py /workspace/ref2va_handler.py
 
 # ---------------------------------------------------------
 # Start
