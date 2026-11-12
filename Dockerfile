@@ -159,13 +159,13 @@ hf_hub_download( \
 # cold-start impact must be tested BEFORE any Production rollout.
 # ---------------------------------------------------------
 
-RUN python -c "\\
-from huggingface_hub import hf_hub_download; \\
-hf_hub_download( \\
-    repo_id='Comfy-Org/MiniMax-H3', \\
-    filename='minimax_h3_ref2va_pruned_w6a8.safetensors', \\
-    subfolder='diffusion_models', \\
-    local_dir='/workspace/ComfyUI/models' \\
+RUN python -c "\
+from huggingface_hub import hf_hub_download; \
+hf_hub_download( \
+    repo_id='Comfy-Org/MiniMax-H3', \
+    filename='minimax_h3_ref2va_pruned_w6a8.safetensors', \
+    subfolder='diffusion_models', \
+    local_dir='/workspace/ComfyUI/models' \
 )"
 
 # ---------------------------------------------------------
