@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - experiment/h3-fl2va-ref2va-no-extra-model
+      - release/h3-fl2va-ref2va-prod-v1
     paths:
       - Dockerfile
       - handler.py
