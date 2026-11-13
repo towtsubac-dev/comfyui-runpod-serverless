@@ -73,3 +73,21 @@ RunPod official workflow reference: https://github.com/runpod/docs/blob/main/ser
 - The temporary Vercel Preview script used only for issuing a one-hour R2 URL was deleted after the test, and ephemeral signing key files were destroyed.
 
 **Remaining promotion actions:** Update only H3 Production endpoint `mxx0h93h0h14e8` to this exact immutable staging image, smoke-test direct modes, then update Vercel Production `H3_REF2VA_ENDPOINT_ID` from separate `swr6qgm13rknsl` to the H3 Production ID. Keep separate Ref2VA endpoint as rollback fallback until Studio Production user acceptance.
+
+
+## Production rollout completed — 2026-11-13
+
+**Production H3 endpoint:** `mxx0h93h0h14e8`, updated by RunPod PATCH of the **exact validated staging image**:
+`registry.runpod.net/towtsubac-dev-comfyui-runpod-serverless-release-h3-fl2va-ref2va-prod-v1-dockerfile_1414786088_032e3b1a722c4bb9c23f:583ce6cba`.
+
+- The original Production image for rollback is `registry.runpod.net/towtsubac-dev-comfyui-runpod-serverless-fix-h3-extend-preserve-source-av-dockerfile_1414786088_032e3b1a722c4bb9c23f:a2146fabb`.
+- Production GPU configuration unchanged (CUDA 13.1), workers `min=0,max=1,idleTimeout=5`, no network volume.
+- First Production cold start involved pulling and extracting large model layers, approximately **803 seconds queue delay**. Subsequent Production jobs ran on Ready workers. Optimize/model caching in future separately if needed.
+- Production `h3_check` job `f13dbc67-873e-41cb-bc0e-1ee77e455a0e-u2` **COMPLETED** with `h3_ready=true`, `models_ok=true`, `nodes_ok=true`.
+- Production `h3_ref2va_check` job `fdd52b04-9dbe-4c91-8b98-99583408aff2-u1` **COMPLETED** with `ref2va_ready=true`, `checkpoint_family=FL2VA`, `nodes_ok=true`.
+- Production native `h3_ref2va_generate` with two synthetic 128px reference images and registered Realism Slider V1 0.5, job `1bb7d3a9-af35-47b7-a811-e9ad3f695b24-u1`, **COMPLETED**, execution `19185ms`, video MP4. Worker log: `50 patches attached` and prompt executed in `17.93 seconds`.
+- Vercel Production `H3_REF2VA_ENDPOINT_ID` changed from dedicated `swr6qgm13rknsl` to the **same original H3 Production** `mxx0h93h0h14e8`; `H3_ENDPOINT_ID` remains unchanged.
+- Vercel Production deploy `dpl_EysvNK4AHtquaBxaieifqGDehEDw`, source Studio `main` commit `bd1c876c9f1dcc656b573af8ef16d7f0a4bba173`, **READY**, aliases `ai-generation-studio-eight.vercel.app` and `ai-generation-studio-video-generation-tosub.vercel.app`.
+- Stage endpoint `xzo2mk7u1u7aw4` was deleted after acceptance (RunPod HTTP 204) to restore one free slot; account has nine endpoints.
+- The original dedicated H3 Ref2VA endpoint `swr6qgm13rknsl` is retained for user-interface rollback. To rollback API/UI, restore Vercel env `H3_REF2VA_ENDPOINT_ID=swr6qgm13rknsl` and redeploy Production; to rollback H3 backend as well, restore the old Production image above.
+- Studio UI authenticated generation end-to-end was **not** exercised within this tooling session, so a final logged-in UI smoke check remains advisable. Do not delete the dedicated backup endpoint until user acceptance.
