@@ -57,3 +57,19 @@ Repo checks are already passing: GitHub Actions #43349664541. The accidentally i
 Before production promotion, follow **Staging acceptance** above. Keep Production and dedicated Ref2VA endpoint intact until all tests pass.
 
 RunPod official workflow reference: https://github.com/runpod/docs/blob/main/serverless/workers/github-integration.mdx
+
+
+## Direct RunPod Staging Acceptance — 2026-11-13
+
+- **RunPod cloned staging** endpoint `xzo2mk7u1u7aw4` (`minimax_H3_Production (Copy)`), image `registry.runpod.net/towtsubac-dev-comfyui-runpod-serverless-release-h3-fl2va-ref2va-prod-v1-dockerfile_1414786088_032e3b1a722c4bb9c23f:583ce6cba`.
+- RunPod native GitHub build ID `be0c3ae1-3a2a-4c20-9d14-e6dfb6245d1a` **COMPLETED** at source SHA `583ce6cbad104e3ba57d3d16804148b8a5406b45`.
+- `h3_check` job `4a506910-701e-47f9-86eb-21ded1325160-u1` **COMPLETED**; `h3_ready=true` and only FL2VA diffusion file exists.
+- `h3_ref2va_check` job `c9bc55bb-fbc4-4c87-a69d-7d3f85e72867-u1` **COMPLETED**; `ref2va_ready=true`, `checkpoint_family=FL2VA`. Note: `reference_conditioning_proven=false` is the check's static indicator, not an error; actual Ref2VA video renders below.
+- `h3_ref2va_generate` job `01588c6c-a99a-46ed-b6e2-b06d8410dbd2-u1` **COMPLETED** from two actual user-supplied images (resized to 144px), 384×384 / 22f / 8 steps, execution 18.5 s, valid MP4.
+- `h3_t2v_generate` job `6a9d2b27-43cb-48f9-ac7b-f19aeb7687f8-u1` **COMPLETED**, 8.8 s, MP4.
+- `h3_generate` I2V job `9d764d3d-53ce-4540-a046-17841a02ee9a-u1` **COMPLETED**, 8.1 s, MP4.
+- `h3_extend_generate` job `4ceb2d3c-1d8a-4a93-9756-a909ab21265e-u1` **COMPLETED**, 20.8 s, MP4. Source: 22f T2V clip; Extend mode 3s, 8 steps. This checks the pipeline; full-length source audio quality is a separate production monitoring matter.
+- `h3_ref2va_generate` with registered **Realism Slider V1** at strength **0.5**, two synthetic 128px face-reference inputs, and native R2 SHA256-verified LoRA download **in the same job**, job `f150309e-70f7-4d9b-bfd1-3fd998928c8f-u2` **COMPLETED** (20.6 s) with MP4. ComfyUI log: `Model MiniMaxH3 prepared for dynamic VRAM loading. 19995MB Staged. 50 patches attached.`; `Prompt executed in 19.19 seconds`, no OOM or loader failures. No extra Ref2VA diffusion checkpoint.
+- The temporary Vercel Preview script used only for issuing a one-hour R2 URL was deleted after the test, and ephemeral signing key files were destroyed.
+
+**Remaining promotion actions:** Update only H3 Production endpoint `mxx0h93h0h14e8` to this exact immutable staging image, smoke-test direct modes, then update Vercel Production `H3_REF2VA_ENDPOINT_ID` from separate `swr6qgm13rknsl` to the H3 Production ID. Keep separate Ref2VA endpoint as rollback fallback until Studio Production user acceptance.
