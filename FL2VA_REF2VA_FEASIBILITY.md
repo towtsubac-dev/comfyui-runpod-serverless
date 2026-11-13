@@ -97,3 +97,19 @@ Acceptance before rollout:
 4. Keep the dedicated Ref2VA Endpoint as a quality baseline, especially for subtle facial identity and restrained motion.
 
 **Production settings and Vercel production routing were not modified during these real-person tests.**
+
+
+## MMH3 Realism Slider one-LoRA smoke test — 2026-11-13
+
+**PASS**: LoRA `MMH3-RealismSlider-V1.safetensors` (Civitai version `3421124`), SHA256 `96a7bed24f7aa1351c6066666495ee64046faf130f53224f4e4a44b3b49b038d`, 2,700,080 bytes. The registered Cloudflare R2 artifact matched the original upload exactly.
+
+On the **isolated** test endpoint `90zcdp1rlohy03` (production configuration unchanged), the base checkpoint was `minimax_h3_fl2va_pruned_int8_convrot.safetensors`. The LoRA strength was **0.5**.
+
+1. `h3_t2v_generate` was used only to fetch and verify the registered LoRA via the existing SHA256-checked R2 downloader. Job `0b19af44-8ebe-40e9-bc19-cca1cb269dfc-u1` **COMPLETED**, 51,816 ms. Log: optional LoRA at strength 0.50; normal video output.
+2. On the **same worker** (`m3tbcc5dyx2nsu`), a native `MiniMaxH3ReferenceToVideo` workflow loaded the existing FL2VA INT8 model and applied the registered file using `LoraLoaderModelOnly` (strength 0.5; no FL2VA Turbo LoRA). Two synthetic references (`EmptyImage`) were used: this is an **application/compatibility smoke test**, not a person-identity or quality comparison.
+3. Combined Ref2VA + FL2VA + RealismSlider job `67484264-ecf9-4e2c-b492-cc543139c28c-u2` **COMPLETED**, `executionTime=28373` ms and `delayTime=138` ms, 384×384, 22 frames, 8 steps. It output MP4 `fl2va_ref2va_lora_realism05_00001_.mp4`.
+4. ComfyUI Worker logs for the combined job show **`Model MiniMaxH3 prepared for dynamic VRAM loading. 19995MB Staged. 50 patches attached.`**, plus `Prompt executed in 26.17 seconds`. No LoRA loader exception or VRAM OOM. This confirms the LoRA was **actually attached to FL2VA inside the native Ref2VA graph** rather than merely downloaded.
+
+Test-only endpoint idleTimeout was restored to **5 seconds** and workers.min stays **0**. Vercel's ephemeral Preview signing script was removed after use. Production endpoint `mxx0h93h0h14e8`, Studio Production, and dedicated Ref2VA Production were not modified.
+
+**Conclusion:** For the requested narrow acceptance criterion ("Can one Realism Slider LoRA be applied successfully to FL2VA-only native Ref2VA?"), the answer is **yes**. Quality comparisons, multiple LoRAs and full-length LoRA rendering remain outside this test.
