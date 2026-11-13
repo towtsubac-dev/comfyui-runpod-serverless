@@ -91,3 +91,12 @@ RunPod official workflow reference: https://github.com/runpod/docs/blob/main/ser
 - Stage endpoint `xzo2mk7u1u7aw4` was deleted after acceptance (RunPod HTTP 204) to restore one free slot; account has nine endpoints.
 - The original dedicated H3 Ref2VA endpoint `swr6qgm13rknsl` is retained for user-interface rollback. To rollback API/UI, restore Vercel env `H3_REF2VA_ENDPOINT_ID=swr6qgm13rknsl` and redeploy Production; to rollback H3 backend as well, restore the old Production image above.
 - Studio UI authenticated generation end-to-end was **not** exercised within this tooling session, so a final logged-in UI smoke check remains advisable. Do not delete the dedicated backup endpoint until user acceptance.
+
+
+## User acceptance — AI Generation Studio Production (2026-11-13)
+
+The user confirmed **generation completed successfully** from the Production Studio Ref2VA UI after `H3_REF2VA_ENDPOINT_ID` was pointed to the unified H3 Production endpoint `mxx0h93h0h14e8`. This closes the UI-to-RunPod generation acceptance check.
+
+Note: A separate inspection of the Studio generation history and Cloudflare R2 object persistence was not conducted in this confirmation; those are not claimed independently verified here.
+
+Retain dedicated backup Ref2VA endpoint `swr6qgm13rknsl` and the prior H3 Production image until the user chooses to retire rollback resources.
