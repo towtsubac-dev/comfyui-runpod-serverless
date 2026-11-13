@@ -40,14 +40,20 @@ Build only this staging endpoint. The H3 Production endpoint and current Studio 
 Never silently deploy a branch to Production before a staging build verifies that it starts and serves all modes.
 
 
-## Actual staging endpoint / build tracking (2026-11-13)
+## Direct RunPod GitHub-build deployment (2026-11-13)
 
-- **Staging Endpoint ID**: `rvl3p6ee60wafg`, name `MiniMax H3 FL2VA Ref2VA Staging`.
-- Endpoint created with the **existing Production image** as a safe placeholder:
-  `registry.runpod.net/towtsubac-dev-comfyui-runpod-serverless-fix-h3-extend-preserve-source-av-dockerfile_1414786088_032e3b1a722c4bb9c23f:a2146fabb`.
-- Staging GPU: 24GB pools `AMPERE_24, ADA_24`, CUDA `13.2/13.1`; workers min=0/max=1/idle=5s; no network volume; Production `mxx0h93h0h14e8` unchanged.
-- Isolated GitHub Actions workflow `.github/workflows/h3-fl2va-ref2va-staging-build.yml` created. **Run ID** `43351781480`, trigger SHA `d9ab3ce7549c805fd7ad21a76c15ede7187af13f`. The resulting tag (only if the build succeeds):
-  `ghcr.io/towtsubac-dev/comfyui-runpod-serverless:h3-fl2va-ref2va-staging-d9ab3ce75`.
-- The workflow is never permitted to overwrite `latest`, `v1`, or Production registry tags.
-- The staging endpoint **must not** be switched to the new tag before the workflow reports success and the image is pullable. After that, change **only staging** via `update_endpoint({id:"rvl3p6ee60wafg",body:{image:"ghcr.io/towtsubac-dev/comfyui-runpod-serverless:h3-fl2va-ref2va-staging-d9ab3ce75"}})`.
-- After the image is applied: `h3_ref2va_check` and `h3_ref2va_generate` with LoRA in the *same job*, then I2V/T2V/Extend regressions. The current 10-endpoint quota is full (9 old endpoints after removing compatibility test `90zcdp1rlohy03` + this staging endpoint).
+The temporary Docker-registry staging endpoint `rvl3p6ee60wafg` was deleted (RunPod 204 response) to free one of the 10 Serverless endpoint slots. **It must not be reused.**
+
+Use the RunPod console's **GitHub integration**, not the GHCR GitHub Actions workflow, for staging. RunPod's documented workflow:
+1. On Serverless, find existing H3 Production endpoint `mxx0h93h0h14e8`, open the three-dot menu and select **Clone Endpoint**.
+2. Under **Repository Configuration** select the GitHub repo `towtsubac-dev/comfyui-runpod-serverless`.
+3. Select **Branch** `release/h3-fl2va-ref2va-prod-v1` and **Dockerfile Path** `Dockerfile`.
+4. Choose name `MiniMax H3 FL2VA Ref2VA Staging` and **Queue** endpoint.
+5. Retain 24GB GPU options, **Active Workers 0**, **Max Workers 1**, **Idle Timeout 5 seconds**, **Network Volume none**, and queue delay 4 seconds. To broaden compatibility, allow CUDA 13.1/13.2 if the console exposes it; Production remains unchanged.
+6. Click **Deploy Endpoint**. RunPod should perform the build into its own registry; monitor **Builds** for *Pending → Building → Uploading → Testing → Completed*. Never assume completion before the status is confirmed.
+
+Repo checks are already passing: GitHub Actions #43349664541. The accidentally introduced **GHCR staging build workflow** was deleted from the release branch (`4c778bf3e946b559fe6faf19796be660b0348091`); a previously initiated GitHub Actions run #43351781480 may remain in progress and must be cancelled manually from its Actions page because the available connector has no cancel-run action. It is **not** the RunPod build and cannot create a RunPod GitHub-linked release.
+
+Before production promotion, follow **Staging acceptance** above. Keep Production and dedicated Ref2VA endpoint intact until all tests pass.
+
+RunPod official workflow reference: https://github.com/runpod/docs/blob/main/serverless/workers/github-integration.mdx
