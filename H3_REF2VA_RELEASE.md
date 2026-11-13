@@ -38,3 +38,16 @@ Build only this staging endpoint. The H3 Production endpoint and current Studio 
 5. Keep the dedicated Ref2VA endpoint `swr6qgm13rknsl` until the unified Production is verified and rollback is safe; do **not** delete it or remove the rollback image prematurely.
 
 Never silently deploy a branch to Production before a staging build verifies that it starts and serves all modes.
+
+
+## Actual staging endpoint / build tracking (2026-11-13)
+
+- **Staging Endpoint ID**: `rvl3p6ee60wafg`, name `MiniMax H3 FL2VA Ref2VA Staging`.
+- Endpoint created with the **existing Production image** as a safe placeholder:
+  `registry.runpod.net/towtsubac-dev-comfyui-runpod-serverless-fix-h3-extend-preserve-source-av-dockerfile_1414786088_032e3b1a722c4bb9c23f:a2146fabb`.
+- Staging GPU: 24GB pools `AMPERE_24, ADA_24`, CUDA `13.2/13.1`; workers min=0/max=1/idle=5s; no network volume; Production `mxx0h93h0h14e8` unchanged.
+- Isolated GitHub Actions workflow `.github/workflows/h3-fl2va-ref2va-staging-build.yml` created. **Run ID** `43351781480`, trigger SHA `d9ab3ce7549c805fd7ad21a76c15ede7187af13f`. The resulting tag (only if the build succeeds):
+  `ghcr.io/towtsubac-dev/comfyui-runpod-serverless:h3-fl2va-ref2va-staging-d9ab3ce75`.
+- The workflow is never permitted to overwrite `latest`, `v1`, or Production registry tags.
+- The staging endpoint **must not** be switched to the new tag before the workflow reports success and the image is pullable. After that, change **only staging** via `update_endpoint({id:"rvl3p6ee60wafg",body:{image:"ghcr.io/towtsubac-dev/comfyui-runpod-serverless:h3-fl2va-ref2va-staging-d9ab3ce75"}})`.
+- After the image is applied: `h3_ref2va_check` and `h3_ref2va_generate` with LoRA in the *same job*, then I2V/T2V/Extend regressions. The current 10-endpoint quota is full (9 old endpoints after removing compatibility test `90zcdp1rlohy03` + this staging endpoint).
