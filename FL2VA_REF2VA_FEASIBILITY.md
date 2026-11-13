@@ -113,3 +113,14 @@ On the **isolated** test endpoint `90zcdp1rlohy03` (production configuration unc
 Test-only endpoint idleTimeout was restored to **5 seconds** and workers.min stays **0**. Vercel's ephemeral Preview signing script was removed after use. Production endpoint `mxx0h93h0h14e8`, Studio Production, and dedicated Ref2VA Production were not modified.
 
 **Conclusion:** For the requested narrow acceptance criterion ("Can one Realism Slider LoRA be applied successfully to FL2VA-only native Ref2VA?"), the answer is **yes**. Quality comparisons, multiple LoRAs and full-length LoRA rendering remain outside this test.
+
+
+## Real-image + Realism Slider 0.5 124-frame full test — 2026-11-13
+
+**PASS** on independent endpoint `90zcdp1rlohy03`: Existing FL2VA INT8 ConvRot checkpoint, native `MiniMaxH3ReferenceToVideo`, registered Realism Slider V1 LoRA strength **0.5** loaded via `LoraLoaderModelOnly`, two previously supplied real-person references (resized and JPEG-compressed for transfer), `864×480`, `124 frames`, `20 steps`, seed `22446688`, no FL2VA Turbo LoRA. RunPod job `24ba05c2-7a8c-4166-9c5a-9dfddc8d3cb8-u2` **COMPLETED** (`executionTime=164615` ms, `delayTime=18` ms); video `fl2va_ref2va_realism05_full_124_00001_.mp4`. Worker log: **`19995MB Staged. 50 patches attached`**. No OOM or LoRA/model-compatibility errors.
+
+The output was decoded independently in follow-up job `f54a9f96-3a73-4617-ae89-30ec2385e177-u2`, which completed successfully. Frames 0/60/120 showed one person, consistent hair, face composition and blue sports shirt, with a natural head tilt near the end. This confirms basic functionality and stability; reference images were downsampled to 144×144 before upload, so precise identity fidelity is not certified.
+
+**Operational issue discovered:** With `minWorkers=0`, RunPod may restart the container between separate jobs even when queued successively, clearing dynamically downloaded R2 LoRA files. A standalone raw workflow that references the downloaded filename can then fail `Value not in list: lora_name ...`. For a production-ready implementation, the registered LoRA must be downloaded/verified in the **same job** as Ref2VA execution, as implemented in `h3_ref2va_generate` on this branch. The final test used a temporary `minWorkers=1` on the isolated endpoint only; after success, **minWorkers=0, maxWorkers=1, idleTimeout=5 seconds** was restored.
+
+The earlier JPEG transfer attempt failed with `PIL.UnidentifiedImageError`; after re-encoding and checking base64 chunk lengths, the full test succeeded. Neither of those errors was a model/LoRA incompatibility.
