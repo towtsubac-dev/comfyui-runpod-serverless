@@ -49,3 +49,51 @@ All tests ran on the isolated endpoint `90zcdp1rlohy03`, using the same immutabl
 
 **Node execution, reference sensitivity, and 124-frame stability: verified on simple cartoon images.**
 This does **not** establish photorealistic identity fidelity, face consistency, or reference strength versus the dedicated Ref2VA checkpoint. The source references used in this first set are simplistic flat cartoons; photo-realistic A/B and LoRA tests have not been performed. Keep the dedicated Ref2VA endpoint as baseline and keep Production unchanged until those quality/regression tests pass. A successful FL2VA conditioning path is useful but not proof of an equivalent dedicated Ref2VA model.
+
+
+## Real-person reference validation — 2026-11-13
+
+The same two previously uploaded portraits were reused without distributing the photographs in this repository:
+- Picture A: black blouse, indoor striped backdrop (\`108362.jpg\`)
+- Picture B: blue sports jersey, green event backdrop (\`108363.jpg\`)
+
+For both native FL2VA and dedicated Ref2VA, the photos were resized into 384×384 reference crops solely for GPU tests. All tests used the same English, single-woman identity-preservation prompt and seed \`22446688\`, with no additional library LoRA.
+
+### Short 22-frame A/B tests (384×384, 8 steps)
+
+| Model | Reference order | GPU execution | RunPod job |
+|---|---|---:|---|
+| Existing FL2VA INT8 | black → blue | 42.562 seconds | \`750b77a8-7bdc-43ab-904a-3c4798258aa5-u2\` |
+| Existing FL2VA INT8 | blue → black | 28.436 seconds | \`9fd2e5a1-f95f-46ae-b97b-9f6ebf7688a9-u1\` |
+| Dedicated Ref2VA W6A8 | black → blue | 40.656 seconds | \`d25b7a2d-42e8-4eb1-acb8-6509bfe68a28-u2\` |
+| Dedicated Ref2VA W6A8 | blue → black | 24.545 seconds | \`e37b8e53-cf5f-42b3-97a9-9a87c57e247d-u2\` |
+
+All four jobs **COMPLETED with MP4s**. Frames 0, 10, 20 were inspected. Both checkpoints preserve the subject's visible face/hair/outfit well over this short span. Both favor Picture 1's outfit/background, so an A/B reversal alone cannot prove how much Picture 2 improves facial identity.
+
+### Full 124-frame validation (864×480, 20 steps)
+
+| Model | GPU execution | RunPod job |
+|---|---:|---|
+| Existing FL2VA INT8 | 184.564 seconds | \`f52bd749-3738-404c-9479-515bd2564875-u2\` |
+| Dedicated Ref2VA W6A8 | 172.811 seconds | \`9fbc490d-334a-4b8b-9c84-8d884348d4a6-u2\` |
+
+Both **COMPLETED with MP4** without an observed OOM on 24GB MIG. Frames 0, 60, 120 were extracted/inspected.
+
+Visual observations: the FL2VA output maintained the person's recognizable face and black outfit but introduced greater hand/arm motion and some background reframing than requested. The dedicated Ref2VA output remained closer to the original close-up, with a restrained head tilt and consistent face, wardrobe and scene. No hard numerical identity ranking can be made from one seed or this source pair.
+
+### LoRA and second-reference control
+
+- Bundled official FL2VA Turbo 8-step LoRA with the native Ref2VA graph, strength 1.0, 384×384 / 22 frames / 8 steps, same seed: **COMPLETED**, job \`ca5f355d-ca5e-4055-9b07-79e1de2f5b42-u2\`, GPU 44.706 seconds. Frames 0/10/20 retained recognizable appearance. This proves the bundled Turbo LoRA can be injected, **not** that any user-registered library LoRA is compatible.
+- Second reference isolation: kept Picture 1 black, replaced Picture 2 blue with an identical copy of Picture 1, holding prompt, seed and all parameters fixed. **COMPLETED**, job \`7bcc1c88-fbaf-46aa-98a7-4b0ba435632f-u1\`, 22.167 seconds. Mid-frame changed (notably blinking) relative to original black+blue. This supports that the second reference is consumed, but does not quantify identity enhancement.
+
+### Deployment decision
+
+**FL2VA is technically viable for native Ref2VA on the same 24GB Production-class GPU, with zero extra diffusion checkpoints.** It remains an **experimental code branch** and is **not installed on the MiniMax H3 Production Endpoint**. The tested jobs used ComfyUI's generic \`action=generate\` on an isolated clone of the existing Production container; the new \`h3_ref2va_generate\` handler in this branch still needs an isolated container smoke test before Production.
+
+Acceptance before rollout:
+1. Build this branch as a uniquely tagged Preview container (preserve the existing Production image for rollback).
+2. Smoke-test \`h3_ref2va_check\` / \`h3_ref2va_generate\` on a test Endpoint.
+3. Repeat I2V, T2V and Extend regression tests and validate registered R2 library LoRAs, not just bundled Turbo.
+4. Keep the dedicated Ref2VA Endpoint as a quality baseline, especially for subtle facial identity and restrained motion.
+
+**Production settings and Vercel production routing were not modified during these real-person tests.**
