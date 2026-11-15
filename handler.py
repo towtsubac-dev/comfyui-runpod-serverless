@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import requests
 import runpod
+from lora_url_policy import lora_source, open_signed_lora
 
 
 # ============================================================
@@ -80,9 +81,7 @@ def download_registered_lora(item):
         raise ValueError("Invalid registered LoRA SHA256.")
     if type(size) is not int or not 16 <= size <= 2 * 1024 ** 3:
         raise ValueError("Invalid registered LoRA size.")
-    parsed = urlparse(url) if isinstance(url, str) else None
-    if not parsed or parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".r2.cloudflarestorage.com"):
-        raise ValueError("Invalid registered LoRA download host.")
+    provider = lora_source(url, lora_id)
 
     directory = os.path.join(COMFYUI_DIR, "models", "loras")
     os.makedirs(directory, exist_ok=True)
@@ -96,8 +95,7 @@ def download_registered_lora(item):
     try:
         hasher = hashlib.sha256()
         total = 0
-        with requests.get(url, stream=True, timeout=(15, 180), allow_redirects=False) as response:
-            response.raise_for_status()
+        with open_signed_lora(url, provider, timeout=(15, 180)) as response:
             with open(temporary, "wb") as output:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
