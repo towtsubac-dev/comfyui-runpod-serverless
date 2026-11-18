@@ -33,7 +33,7 @@ WORKDIR /workspace
 # ComfyUI
 # ---------------------------------------------------------
 
-RUN git clone --depth 1 \
+RUN git clone --depth 1 --branch v0.45.0 \
     https://github.com/comfyanonymous/ComfyUI.git \
     /workspace/ComfyUI
 
@@ -160,6 +160,14 @@ hf_hub_download( \
 WORKDIR /workspace
 
 COPY handler.py /workspace/handler.py
+COPY memory_diagnostics.py /workspace/memory_diagnostics.py
+COPY tests/test_memory_diagnostics.py /workspace/tests/test_memory_diagnostics.py
+RUN python -m py_compile /workspace/handler.py /workspace/memory_diagnostics.py && \
+    cd /workspace && python -m unittest discover -s /workspace/tests -p 'test_memory_diagnostics.py' -v
+COPY lora_url_policy.py /workspace/lora_url_policy.py
+COPY tests/test_lora_url_policy.py /workspace/tests/test_lora_url_policy.py
+RUN cd /workspace && python -m unittest discover -s /workspace/tests -p 'test_lora_url_policy.py' -v
+COPY ref2va_handler.py /workspace/ref2va_handler.py
 
 # ---------------------------------------------------------
 # Start

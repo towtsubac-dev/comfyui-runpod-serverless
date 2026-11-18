@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import requests
 import runpod
+from lora_url_policy import lora_source, open_signed_lora
+from memory_diagnostics import monitor_generation_memory
 
 
 # ============================================================
@@ -80,9 +82,7 @@ def download_registered_lora(item):
         raise ValueError("Invalid registered LoRA SHA256.")
     if type(size) is not int or not 16 <= size <= 2 * 1024 ** 3:
         raise ValueError("Invalid registered LoRA size.")
-    parsed = urlparse(url) if isinstance(url, str) else None
-    if not parsed or parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(".r2.cloudflarestorage.com"):
-        raise ValueError("Invalid registered LoRA download host.")
+    provider = lora_source(url, lora_id)
 
     directory = os.path.join(COMFYUI_DIR, "models", "loras")
     os.makedirs(directory, exist_ok=True)
@@ -96,8 +96,7 @@ def download_registered_lora(item):
     try:
         hasher = hashlib.sha256()
         total = 0
-        with requests.get(url, stream=True, timeout=(15, 180), allow_redirects=False) as response:
-            response.raise_for_status()
+        with open_signed_lora(url, provider, timeout=(15, 180)) as response:
             with open(temporary, "wb") as output:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
@@ -212,6 +211,7 @@ def start_comfyui():
             "--port",
             "8188",
             "--use-sage-attention",
+            "--fast-disk",
         ],
         cwd=COMFYUI_DIR,
         stdout=None,
@@ -2006,6 +2006,7 @@ def run_workflow(
 # Main handler
 # ============================================================
 
+@monitor_generation_memory
 def handler(event):
     try:
         input_data = event.get(
@@ -2023,6 +2024,25 @@ def handler(event):
 
         if action == "h3_check":
             return h3_check()
+
+        if action == "h3_ref2va_check":
+            from ref2va_handler import ref2va_check
+            ensure_comfyui()
+            return ref2va_check(comfy_get, COMFYUI_DIR)
+
+        if action == "h3_ref2va_generate":
+            from ref2va_handler import generate_ref2va
+            ensure_comfyui()
+            return generate_ref2va(
+                input_data,
+                upload_image=upload_image,
+                queue_prompt=queue_prompt,
+                wait_for_result=wait_for_result,
+                extract_outputs=extract_outputs,
+                download_output=download_output,
+                comfy_dir=COMFYUI_DIR,
+                resolve_loras=resolve_optional_loras,
+            )
 
         if action == "h3_generate":
             return h3_generate(
