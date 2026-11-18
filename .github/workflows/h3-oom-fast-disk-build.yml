@@ -1,0 +1,64 @@
+name: H3 OOM Fast Disk Preview Build
+
+on:
+  push:
+    branches:
+      - test/h3-oom-fast-disk-20261118
+    paths:
+      - handler.py
+      - Dockerfile.oom-fast-disk-preview
+      - .github/workflows/h3-oom-fast-disk-build.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout isolated preview branch
+        uses: actions/checkout@v4
+
+      - name: Verify startup setting without importing heavy runtime
+        run: |
+          python3 -m py_compile handler.py
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          src = Path("handler.py").read_text()
+          tree = ast.parse(src)
+          func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "start_comfyui")
+          startup = ast.get_source_segment(src, func)
+          assert startup.count('"--fast-disk"') == 1
+          assert '"--use-sage-attention"' in startup
+          assert "v0.45.0" in Path("Dockerfile.oom-fast-disk-preview").read_text()
+          print("Preview startup flags verified")
+          PY
+
+      - name: Free build disk space for embedded H3 weights
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build preview image with immutable commit tag
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.oom-fast-disk-preview
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/comfyui-runpod-serverless:h3-oom-fast-disk-${{ github.sha }}
