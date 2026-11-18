@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 import runpod
 from lora_url_policy import lora_source, open_signed_lora
+from memory_diagnostics import monitor_generation_memory
 
 
 # ============================================================
@@ -2005,6 +2006,7 @@ def run_workflow(
 # Main handler
 # ============================================================
 
+@monitor_generation_memory
 def handler(event):
     try:
         input_data = event.get(
