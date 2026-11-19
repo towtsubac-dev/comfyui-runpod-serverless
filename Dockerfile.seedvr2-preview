@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+# Isolated SeedVR2 video upscaler; does not use or modify MiniMax H3.
+FROM pytorch/pytorch:2.12.0-cuda13.0-cudnn9-runtime
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+ENV SEEDVR2_MODEL_DIR=/opt/seedvr2/models/SEEDVR2 PYTHONPATH=/opt/seedvr2
+RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/seedvr2 && git -C /opt/seedvr2 init && \
+    git -C /opt/seedvr2 remote add origin https://github.com/CunFeng-W/SeedVR2-CLI.git && \
+    git -C /opt/seedvr2 fetch --depth 1 origin c7086f2de4144789b568ec94605c27b59c5f28e1 && \
+    git -C /opt/seedvr2 checkout --detach FETCH_HEAD && \
+    test "$(git -C /opt/seedvr2 rev-parse HEAD)" = "c7086f2de4144789b568ec94605c27b59c5f28e1"
+RUN pip install --no-cache-dir -r /opt/seedvr2/requirements.txt && \
+    pip install --no-cache-dir runpod huggingface_hub requests
+# The two model files are baked into the image; no cold-start model download.
+RUN python - <<'PY'
+from huggingface_hub import hf_hub_download
+from pathlib import Path
+dest = "/opt/seedvr2/models/SEEDVR2"
+Path(dest).mkdir(parents=True, exist_ok=True)
+for repo, name in [
+    ("AInVFX/SeedVR2_comfyUI", "seedvr2_ema_3b-Q4_K_M.gguf"),
+    ("numz/SeedVR2_comfyUI", "ema_vae_fp16.safetensors"),
+]:
+    path = hf_hub_download(repo_id=repo, filename=name, local_dir=dest)
+    assert Path(path).stat().st_size > 1000000, name
+PY
+# Compare SHA-256 with the upstream project's registry before publishing the image.
+RUN python - <<'PY'
+from hashlib import sha256
+from pathlib import Path
+root = Path("/opt/seedvr2/models/SEEDVR2")
+expected = {
+    "seedvr2_ema_3b-Q4_K_M.gguf": "e665e3909de1a8c88a69c609bca9d43ff5a134647face2ce4497640cc3597f0e",
+    "ema_vae_fp16.safetensors": "20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1",
+}
+for name, digest in expected.items():
+    h = sha256()
+    with (root / name).open("rb") as source:
+        for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+            h.update(chunk)
+    assert h.hexdigest() == digest, f"Model checksum mismatch: {name}"
+PY
+COPY seedvr2/handler.py /opt/seedvr2_handler.py
+COPY seedvr2/test_handler.py /opt/test_seedvr2_handler.py
+RUN python -m py_compile /opt/seedvr2_handler.py && python -m unittest discover -s /opt -p 'test_seedvr2_handler.py' -v
+WORKDIR /opt
+CMD ["python", "/opt/seedvr2_handler.py"]
