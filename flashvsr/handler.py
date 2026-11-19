@@ -174,6 +174,50 @@ def _finalize(original, raw, output, meta, geo):
     subprocess.run(cmd, check=True, timeout=90)
 
 
+def _diagnose_inference_failure(output, exit_code):
+    """Include the terminal exception, not the command line that ran it."""
+    lines = [s.strip() for s in (output or "").splitlines() if s.strip()]
+    markers = (
+        "Error:", "Exception:", "AssertionError", "ModuleNotFoundError",
+        "ImportError", "OutOfMemoryError", "out of memory",
+        "CUDA error", "triton.compiler", "no kernel image",
+        "unsupported", "undefined symbol", "Killed",
+    )
+    relevant = [s for s in lines if any(marker.lower() in s.lower() for marker in markers)]
+    if relevant:
+        summary = relevant[-1]
+        # Tracebacks may end with a meaningful message on the next line.
+        if lines and summary != lines[-1] and len(lines[-1]) < 250:
+            summary += " | " + lines[-1]
+    else:
+        summary = " | ".join(lines[-3:]) if lines else "No subprocess output"
+    summary = " ".join(summary.split())
+    return f"FlashVSR+ inference failed (exit {exit_code}): {summary[:700]}"
+
+
+def _run_flashvsr(command):
+    """Capture subprocess stdout/stderr for actionable RunPod job errors."""
+    try:
+        result = subprocess.run(
+            command, cwd=str(BASE), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True,
+            errors="replace", timeout=INFERENCE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        print("[FLASHVSR] inference_aborted reason=300s_budget_exceeded", flush=True)
+        raise RuntimeError(
+            "FlashVSR+ inference exceeded the 300-second test budget"
+        ) from error
+    output = result.stdout or ""
+    # Keep a bounded view in the worker logs for users inspecting RunPod.
+    if output:
+        print("[FLASHVSR] child process output (last 120 lines):", flush=True)
+        for line in output.splitlines()[-120:]:
+            print(line, flush=True)
+    if result.returncode:
+        raise RuntimeError(_diagnose_inference_failure(output, result.returncode))
+
+
 def _upload(url, path):
     size = Path(path).stat().st_size
     if size < 512 or size > MAX_OUTPUT_BYTES:
@@ -224,13 +268,7 @@ def handle(event):
               f"frames={info['frames']} fps={info['fps']} bytes={source_bytes} "
               f"canvas={geometry['canvas_width']}x{geometry['canvas_height']}", flush=True)
         begin = time.monotonic()
-        try:
-            subprocess.run(_command(used, raw, geometry),
-                           cwd=str(BASE), check=True,
-                           timeout=INFERENCE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired as error:
-            print("[FLASHVSR] inference_aborted reason=300s_budget_exceeded", flush=True)
-            raise RuntimeError("FlashVSR+ inference exceeded the 300-second test budget") from error
+        _run_flashvsr(_command(used, raw, geometry))
         inference_s = round(time.monotonic() - begin, 2)
         if not raw.is_file():
             raise RuntimeError("FlashVSR+ did not produce the requested MP4")
