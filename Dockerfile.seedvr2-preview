@@ -9,8 +9,10 @@ RUN mkdir -p /opt/seedvr2 && git -C /opt/seedvr2 init && \
     git -C /opt/seedvr2 fetch --depth 1 origin c7086f2de4144789b568ec94605c27b59c5f28e1 && \
     git -C /opt/seedvr2 checkout --detach FETCH_HEAD && \
     test "$(git -C /opt/seedvr2 rev-parse HEAD)" = "c7086f2de4144789b568ec94605c27b59c5f28e1"
-RUN pip install --no-cache-dir -r /opt/seedvr2/requirements.txt && \
-    pip install --no-cache-dir runpod huggingface_hub requests
+# Use the same pip install policy as the working MiniMax H3 CUDA 13 image.
+# Split stages to make any dependency resolution failure identifiable in RunPod logs.
+RUN python -m pip install --break-system-packages --no-cache-dir -r /opt/seedvr2/requirements.txt
+RUN python -m pip install --break-system-packages --no-cache-dir runpod huggingface_hub requests
 # The two model files are baked into the image; no cold-start model download.
 RUN python - <<'PY'
 from huggingface_hub import hf_hub_download
