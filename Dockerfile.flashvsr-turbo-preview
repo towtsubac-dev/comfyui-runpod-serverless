@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1
+# FlashVSR+ Turbo isolated RunPod Serverless test (not MiniMax H3 Production).
+# Official Torch 2.7 supported line + CUDA 12.8 / Triton 3.x.
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+ENV PYTHONPATH=/opt/flashvsr HF_HUB_DISABLE_TELEMETRY=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Pin the official implementation, not a community-modified ComfyUI node.
+RUN mkdir -p /opt/flashvsr && git -C /opt/flashvsr init && \
+    git -C /opt/flashvsr remote add origin https://github.com/OpenImagingLab/FlashVSR_Plus.git && \
+    git -C /opt/flashvsr fetch --depth 1 origin b515ffc6dba57fdc9ad84c66cadd87d05f27590a && \
+    git -C /opt/flashvsr checkout --detach FETCH_HEAD && \
+    test "$(git -C /opt/flashvsr rev-parse HEAD)" = "b515ffc6dba57fdc9ad84c66cadd87d05f27590a"
+
+# Keep the base image CUDA-enabled torch. Install the official inference
+# requirements before the standalone Triton attention package.
+RUN python -m pip install --break-system-packages --no-cache-dir \
+    -r /opt/flashvsr/requirements.txt
+RUN python -m pip install --break-system-packages --no-cache-dir \
+    runpod "huggingface_hub>=0.28,<2" requests
+RUN python -m pip install --break-system-packages --no-cache-dir --no-deps \
+    -e /opt/flashvsr
+RUN python -m pip install --break-system-packages --no-cache-dir --no-deps \
+    -e /opt/flashvsr/operators/flashvsr_attn
+
+# The only Turbo weights required are the DiT, LQ projection and TinyDecoder.
+# No Base/V1 checkpoints or Wan VAE are included.
+# A full fixed HF revision prevents silently changing weights between builds.
+RUN python - <<'PY'
+from huggingface_hub import hf_hub_download
+from pathlib import Path
+
+root = Path("/opt/flashvsr/ckpts")
+root.mkdir(parents=True, exist_ok=True)
+revision = "46b79520946ac67dec94d1566490690953c7debc"
+models = {
+    "turbo/dit.safetensors": 4_000_000_000,
+    "turbo/lq_proj_in.safetensors": 700_000_000,
+    "TCDecoder.ckpt": 120_000_000,
+}
+for name, minimum in models.items():
+    path = hf_hub_download(
+        repo_id="ruchangyao/FlashVSR_plus",
+        filename=name,
+        revision=revision,
+        local_dir=str(root),
+    )
+    size = Path(path).stat().st_size
+    assert size > minimum, f"Missing or incomplete FlashVSR+ checkpoint: {name}"
+    print(f"[FLASHVSR BUILD] {name}: {size:,} bytes", flush=True)
+assert Path("/opt/flashvsr/prompt_tensor/posi_prompt.pth").stat().st_size > 1024
+PY
+
+COPY flashvsr/handler.py /opt/flashvsr_handler.py
+COPY flashvsr/test_handler.py /opt/test_flashvsr_handler.py
+RUN python -m py_compile /opt/flashvsr_handler.py && \
+    python -m unittest discover -s /opt -p 'test_flashvsr_handler.py' -v && \
+    python - <<'PY'
+import torch, triton, flashvsr_attn
+print("[FLASHVSR BUILD] torch", torch.__version__, "triton", triton.__version__)
+assert torch.__version__.split("+")[0].startswith("2.7."), "Unexpected torch version"
+PY
+WORKDIR /opt
+CMD ["python", "/opt/flashvsr_handler.py"]
