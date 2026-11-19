@@ -136,7 +136,7 @@ def _command(source, output, geo):
         "--attn-kernel", "triton_block_sparse",
         "--temporal-compression", "4",
         "--tiny-decoder-mode", "serial",
-        "--decode-every", "28",
+        "--decode-every", "auto",
         "--video-preset", "veryfast",
     ]
 
