@@ -51,7 +51,7 @@ class FlashVSRHandlerTests(unittest.TestCase):
         })
         self.assertIn("triton_block_sparse", cmd)
         self.assertIn("turbo", cmd)
-        self.assertIn("28", cmd)
+        self.assertIn("auto", cmd)
         self.assertEqual(h.INFERENCE_TIMEOUT_SECONDS, 300)
 
     def test_reject_unknown_action(self):
