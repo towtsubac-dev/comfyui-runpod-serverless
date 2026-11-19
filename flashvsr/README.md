@@ -1,8 +1,8 @@
-# FlashVSR+ Turbo — separate RunPod test (2026-11-19)
+# FlashVSR+ Turbo — production (2026-11-20)
 
-**This is not a change to Production MiniMax H3, ErosMax, or SeedVR2.**
-GitHub branch: `test/flashvsr-plus-turbo-20261119`
-Dockerfile: `Dockerfile.flashvsr-turbo-preview`
+**Dedicated FlashVSR+ Turbo production upscaler; MiniMax H3, ErosMax and SeedVR2 are separate.**
+GitHub branch: `release/flashvsr-turbo-prod-v1`
+Dockerfile: `Dockerfile.flashvsr-turbo`
 
 - Official implementation: [OpenImagingLab/FlashVSR_Plus](https://github.com/OpenImagingLab/FlashVSR_Plus) at `b515ffc6dba57fdc9ad84c66cadd87d05f27590a`
 - Model weights: `ruchangyao/FlashVSR_plus`, fixed revision `46b79520946ac67dec94d1566490690953c7debc`
@@ -15,7 +15,7 @@ Dockerfile: `Dockerfile.flashvsr-turbo-preview`
 - Inference terminates after **300 seconds** without retry; source download, container startup, MP4 encoding and upload are extra
 
 ## Serverless Github-linked build
-Create a **new GitHub-built Endpoint** from this repository and branch.
+Use the existing **FlashVSR-production** GitHub-built endpoint. Keep other model endpoints unchanged.
 Do not reuse the SeedVR2 endpoint or overwrite the MiniMax H3 endpoint.
 
 Recommended RunPod Endpoint settings:
@@ -23,7 +23,7 @@ Recommended RunPod Endpoint settings:
 - Serverless GPU pool: AMPERE_24 with allowed compute type MIG 24gb, one GPU
 - Active/min Workers 0, max Workers 1, idleTimeout 5s, queueDelay 4s
 - Container Disk 50GB, timeout 600000ms (10min), Network Volume none
-- Dockerfile Path: `Dockerfile.flashvsr-turbo-preview`
+- Dockerfile Path: `Dockerfile.flashvsr-turbo`
 
 ### Health test
 ```json
@@ -45,4 +45,4 @@ real-video job is submitted on build completion.
 The official CLI's optimized attention backend is explicitly
 `--attn-kernel triton_block_sparse`; it must not silently fall back to SDPA.
 No audio is sent back as JSON. The worker directly uploads MP4 to R2.
-Production integration and legacy SeedVR2 cleanup are separate later tasks.
+Studio Production integration was deployed separately; legacy SeedVR2 cleanup remains separate.
