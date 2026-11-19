@@ -4,8 +4,12 @@
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 ENV PYTHONPATH=/opt/flashvsr HF_HUB_DISABLE_TELEMETRY=1
+# Triton 3.3 JIT-compiles its CUDA driver helper at first GPU inference,
+# including when running from a CUDA runtime (not devel) base image.
+ENV CC=/usr/bin/gcc CXX=/usr/bin/g++
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
+    git ffmpeg ca-certificates build-essential && rm -rf /var/lib/apt/lists/*
+RUN test -x "$CC" && test -x "$CXX" && "$CC" --version | head -n 1
 
 # Pin the official implementation, not a community-modified ComfyUI node.
 RUN mkdir -p /opt/flashvsr && git -C /opt/flashvsr init && \
