@@ -168,6 +168,7 @@ COPY lora_url_policy.py /workspace/lora_url_policy.py
 COPY tests/test_lora_url_policy.py /workspace/tests/test_lora_url_policy.py
 RUN cd /workspace && python -m unittest discover -s /workspace/tests -p 'test_lora_url_policy.py' -v
 COPY ref2va_handler.py /workspace/ref2va_handler.py
+COPY video_720p.py /workspace/video_720p.py
 
 # ---------------------------------------------------------
 # Start
