@@ -1,4 +1,5 @@
 import base64
+from video_720p import apply_720p_crop
 import os
 import time
 import uuid
@@ -861,6 +862,7 @@ def h3_t2v_generate(job_input):
     if seed is not None:
         seed = int(seed)
     workflow = build_h3_t2v_workflow(prompt=prompt, width=width, height=height, length=length, steps=steps, seed=seed, optional_loras=optional_loras)
+    apply_720p_crop(workflow, width, height, job_input.get("output_resolution"))
     prompt_id = queue_prompt(workflow)
     history = wait_for_result(prompt_id)
     results = []
@@ -994,6 +996,8 @@ def h3_generate(job_input):
         seed=seed,
         optional_loras=optional_loras,
     )
+
+    apply_720p_crop(workflow, width, height, job_input.get("output_resolution"))
 
     prompt_id = queue_prompt(workflow)
 
