@@ -5,6 +5,8 @@ WORKDIR /workspace
 COPY --link handler.py /workspace/handler.py
 COPY --link ref2va_handler.py /workspace/ref2va_handler.py
 COPY --link video_720p.py /workspace/video_720p.py
+COPY --link lora_url_policy.py /workspace/lora_url_policy.py
+COPY --link memory_diagnostics.py /workspace/memory_diagnostics.py
 COPY --link tests/test_video_720p.py /workspace/tests/test_video_720p.py
 RUN python -m py_compile /workspace/handler.py /workspace/ref2va_handler.py /workspace/video_720p.py \
     && python -m unittest discover -s /workspace/tests -p 'test_video_720p.py' -v
