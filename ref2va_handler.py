@@ -5,6 +5,7 @@ The ComfyUI API requires flat dotted autogrow inputs, indexed from zero:
 ref_images.ref_image_0, ref_images.ref_image_1, ...
 """
 import base64
+from video_720p import apply_720p_crop
 import io
 import ipaddress
 import os
@@ -220,6 +221,7 @@ def generate_ref2va(job_input, upload_image, queue_prompt, wait_for_result,
             actual = upload_image(encoded, filename)
             uploaded.append(actual)
         workflow = build_ref2va_workflow(uploaded, prompt, width, height, length, steps, seed, ref_image_size, optional_loras=optional_loras)
+        apply_720p_crop(workflow, width, height, job_input.get("output_resolution"))
         prompt_id = queue_prompt(workflow)
         history = wait_for_result(prompt_id, timeout=1800)
         outputs = []

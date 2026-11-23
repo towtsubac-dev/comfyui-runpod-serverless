@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1.7
+# Code-only 720p overlay; no RUN means BuildKit can reuse existing large model layers.
+FROM --platform=linux/amd64 ghcr.io/towtsubac-dev/comfyui-runpod-serverless:latest
+COPY --link handler.py /workspace/handler.py
+COPY --link ref2va_handler.py /workspace/ref2va_handler.py
+COPY --link video_720p.py /workspace/video_720p.py
+COPY --link lora_url_policy.py /workspace/lora_url_policy.py
+COPY --link memory_diagnostics.py /workspace/memory_diagnostics.py
+WORKDIR /workspace
+CMD ["python", "/workspace/handler.py"]
